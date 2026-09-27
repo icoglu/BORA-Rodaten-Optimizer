@@ -322,3 +322,18 @@ def test_catalog_section_hidden(tmp_path: Path):
         assert "Katalog &amp; Kategorisierung" not in html and 'class="path"' not in html
         assert "Alles zurücksetzen und löschen" in html
         assert c.get("/api/files").json()          # Katalog im Hintergrund weiterhin vorhanden
+
+
+def test_old_day_packages_without_awr_are_removed(tmp_path: Path):
+    """Altbestand aus früheren Versionen (Tages-Paket ohne AWR) wird beim Einlesen entfernt."""
+    data = tmp_path / "data"
+    (data / "output").mkdir(parents=True)
+    (data / "output" / "BORA_2026-04-10.zip").write_bytes(b"PK\x05\x06" + b"\0" * 18)   # altes Paket
+    with _client(data) as c:
+        c.app.state.jobs.wait()                                          # Start-Scan räumt auf
+        assert c.get("/api/status").json()["result"]["tagespakete_entfernt"] == 1
+        assert c.get("/api/outputs").json() == []
+        c.put("/api/upload", params={"name": "access.log"}, content=ACCESS.encode())
+        c.app.state.jobs.wait()
+        html = c.get("/").text
+        assert "0 AWR-Reports" in html and "1 Access-Logs" in html

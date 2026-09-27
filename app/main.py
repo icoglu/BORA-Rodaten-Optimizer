@@ -154,7 +154,26 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
         out = repackage_awr(days, progress)
         if settings.day_packages:
             out.update(repackage_days(days, progress))
+        else:
+            removed = cleanup_day_zips()
+            if removed:
+                out["tagespakete_entfernt"] = removed
         return out
+
+    def cleanup_day_zips() -> int:
+        """Tages-Pakete entfernen, die die Regeln nicht (mehr) erfüllen - z.B. Altbestand
+        ohne AWR-Report aus früheren Versionen. Gültige (manuell erzeugte) bleiben."""
+        records = catalog.all()
+        planned = packager.plan_windows(records, "day", settings.zip_prefix, require_awr=settings.require_awr)
+        if settings.require_logs:
+            planned = [w for w in planned if packager.has_log_candidates(w, records)]
+        valid = {f"{w.name}.zip" for w in planned}
+        removed = 0
+        for p in settings.output_dir.glob("*.zip"):
+            if day_zip.match(p.name) and p.name not in valid:
+                p.unlink()
+                removed += 1
+        return removed
 
     def missing_day_packages() -> set[str]:
         return {d for d in catalog.all_days()
@@ -224,6 +243,12 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
             "auto_package": settings.auto_package, "require_awr": settings.require_awr,
             "day_packages": settings.day_packages, "require_logs": settings.require_logs,
             "has_awr": any(f.category == detect.AWR and packager.is_awr_report(f) for f in files),
+            "summary": {
+                "AWR-Reports": sum(1 for f in files if f.category == detect.AWR and packager.is_awr_report(f)),
+                "weitere Oracle-Reports": sum(1 for f in files if f.category == detect.AWR and not packager.is_awr_report(f)),
+                "Access-Logs": counts[detect.ACCESS], "Server-Logs": counts[detect.SERVER],
+                "nicht erkannt": counts[detect.UNKNOWN],
+            },
         })
 
     @app.get("/api/selfcheck")

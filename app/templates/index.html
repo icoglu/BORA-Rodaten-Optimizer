@@ -87,6 +87,9 @@
   <div class="flash warn">Keine AWR-Reports gefunden – es werden keine Pakete erstellt.</div>
   {% endif %}
   {% endif %}
+  <p class="summary"><strong>Erkannt:</strong>
+    {% for k, v in summary.items() %}{% if v or k in ("AWR-Reports", "Access-Logs", "Server-Logs") %}<span class="{% if k == 'AWR-Reports' and not v %}err{% endif %}">{{ v }} {{ k }}</span>{% if not loop.last %} · {% endif %}{% endif %}{% endfor %}
+  </p>
   <form action="/build" method="post">
     <fieldset>
       <legend>Manuell neu erstellen</legend>
