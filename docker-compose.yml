@@ -19,10 +19,10 @@ x-build-args: &build-args
 
 services:
   bora-optimizer:
-    # Wird immer lokal gebaut (schnell dank Cache) - kein Registry-Login nötig.
+    # Wird beim ersten Start lokal gebaut, danach wiederverwendet - kein Registry-Login nötig.
+    # Nach einem Update neu bauen: docker compose up -d --build
     # Fertiges Registry-Image stattdessen: siehe README, "docker run ... ghcr.io/..."
     image: bora-rodaten-optimizer:latest
-    pull_policy: build
     build:
       context: .
       target: runtime
