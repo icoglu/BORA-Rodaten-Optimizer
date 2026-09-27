@@ -1,4 +1,5 @@
 import io
+import json
 import zipfile
 from pathlib import Path
 
@@ -337,3 +338,46 @@ def test_old_day_packages_without_awr_are_removed(tmp_path: Path):
         c.app.state.jobs.wait()
         html = c.get("/").text
         assert "0 AWR-Reports" in html and "1 Access-Logs" in html
+
+
+def test_no_redundancy_in_packages(tmp_path: Path):
+    """Identische Dateien und derselbe AWR-Report als .html + .txt landen nur einmal im Paket."""
+    from .conftest import AWR_TXT, SERVER
+    awr_txt_same_snaps = AWR_TXT.replace("102 27-Sep-26 12:59:50", "100 27-Sep-26 10:00:05").replace(
+        "103 27-Sep-26 14:00:10", "101 27-Sep-26 11:00:07")
+    bundle = io.BytesIO()
+    with zipfile.ZipFile(bundle, "w") as z:
+        z.writestr("logs/access.log", ACCESS)                    # identisch zum Einzel-Upload
+        z.writestr("logs/server1.log", SERVER)
+    with _client(tmp_path / "data") as c:
+        c.app.state.jobs.wait()
+        c.put("/api/upload", params={"name": "access.log", "source": "wls01"}, content=ACCESS.encode())
+        c.put("/api/upload", params={"name": "access_kopie.log", "source": "wls01"}, content=ACCESS.encode())
+        c.put("/api/upload", params={"name": "export.zip", "source": "wls01"}, content=bundle.getvalue())
+        c.put("/api/upload", params={"name": "awrrpt_1_100_101.html", "source": "db"}, content=AWR_HTML.encode())
+        c.put("/api/upload", params={"name": "awrrpt_1_100_101.txt", "source": "db"}, content=awr_txt_same_snaps.encode())
+        c.put("/api/upload", params={"name": "awrrpt_kopie.html", "source": "db2"}, content=AWR_HTML.encode())
+        c.app.state.jobs.wait()
+        z = zipfile.ZipFile(io.BytesIO(c.get("/download/BORA_2026-09-27_1000-1100.zip").content))
+        names = [n for n in z.namelist() if n != "manifest.json"]
+        assert sum(n.startswith("access/") for n in names) == 1, names   # 3x gleiche access.log -> 1x
+        assert sum(n.startswith("server/") for n in names) == 1, names
+        assert [n for n in names if n.startswith("awr/")] == ["awr/db/awrrpt_1_100_101.html"]  # HTML behalten
+        manifest = json.loads(z.read("manifest.json"))
+        awr = next(e for e in manifest["dateien"] if e["kategorie"] == "awr")
+        assert set(awr["duplikate_ausgelassen"]) == {"inbox/db/awrrpt_1_100_101.txt", "inbox/db2/awrrpt_kopie.html"}
+        acc = next(e for e in manifest["dateien"] if e["kategorie"] == "access")
+        assert len(acc["duplikate_ausgelassen"]) == 2
+
+
+def test_different_content_is_kept(tmp_path: Path):
+    """Nur echte Duplikate werden ausgelassen - unterschiedliche Logs zweier Hosts bleiben beide."""
+    other = ACCESS.replace("10.0.0.3", "10.9.9.9")
+    with _client(tmp_path / "data") as c:
+        c.app.state.jobs.wait()
+        c.put("/api/upload", params={"name": "access.log", "source": "wls01"}, content=ACCESS.encode())
+        c.put("/api/upload", params={"name": "access.log", "source": "wls02"}, content=other.encode())
+        c.put("/api/upload", params={"name": "awrrpt_1_100_101.html", "source": "db"}, content=AWR_HTML.encode())
+        c.app.state.jobs.wait()
+        z = zipfile.ZipFile(io.BytesIO(c.get("/download/BORA_2026-09-27_1000-1100.zip").content))
+        assert {"access/wls01/access.log", "access/wls02/access.log"} <= set(z.namelist())

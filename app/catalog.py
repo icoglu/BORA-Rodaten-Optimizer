@@ -14,7 +14,7 @@ from . import detect
 
 # Erhöhen, wenn sich die Analyse ändert - vorhandene Einträge werden dann neu
 # analysiert (manuelle Kategorien bleiben erhalten).
-ANALYSIS_VERSION = "2"
+ANALYSIS_VERSION = "3"
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
@@ -195,6 +195,7 @@ class Catalog:
                 first, last = a.begin, a.end
                 info = {"report_type": a.report_type, "begin_snap": a.begin_snap, "end_snap": a.end_snap,
                         "db_name": a.db_name, "instance": a.instance, "time_source": a.time_source,
+                        "sha256": a.sha256,
                         "periods": [[b.isoformat(), e.isoformat()] for b, e in a.periods]}
                 if first and last:
                     days = sorted({d for b, e in a.periods for d in detect.days_between(b, e)})
@@ -203,7 +204,7 @@ class Catalog:
             elif category in detect.LOG_CATEGORIES:
                 li = detect.scan_log(path, file_progress)
                 first, last, days = li.first, li.last, sorted(li.days)
-                info = {"lines": li.lines, "stamped_lines": li.stamped_lines}
+                info = {"lines": li.lines, "stamped_lines": li.stamped_lines, "sha256": li.sha256}
                 if li.lines and not li.stamped_lines:
                     error = "Keine Zeitstempel erkannt"
         except Exception as exc:  # defekte Datei darf den Scan nicht abbrechen

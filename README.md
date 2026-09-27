@@ -48,6 +48,13 @@ vorliegen), wird kein Paket erzeugt. Kommen passende Logs später dazu,
 entsteht das Paket automatisch; werden sie gelöscht, wird es entfernt.
 Abschaltbar mit `BORA_REQUIRE_LOGS=0`.
 
+**Keine Redundanzen.** Identische Dateien (gleicher Inhalt, SHA-256 –
+z. B. einzeln und im ZIP hochgeladen) und derselbe Oracle-Report in mehreren
+Formaten (gleiche DB, Instanz, Snap-IDs, z. B. `.html` und `.txt`) kommen nur
+einmal ins Paket; HTML hat Vorrang, sonst das zuerst erfasste Original.
+Ausgelassene Duplikate stehen in der `manifest.json` unter
+`duplikate_ausgelassen`.
+
 **Ohne AWR-Report kein Paket.** Liegt kein AWR-Report vor, wird kein Paket
 erzeugt (auch nicht per Button); ASH-/ADDM-/Statspack-Reports ohne
 überschneidenden AWR-Zeitraum und Tage ohne AWR-Report erhalten kein Paket.

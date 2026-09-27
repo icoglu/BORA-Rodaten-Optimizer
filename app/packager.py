@@ -76,6 +76,52 @@ def is_awr_report(rec: FileRecord) -> bool:
     return (rec.info.get("report_type") or "AWR").upper().startswith("AWR")
 
 
+def _preference(r: FileRecord) -> tuple:
+    """Welche von mehreren gleichwertigen Dateien behalten wird: HTML vor Text,
+    Upload (inbox) vor eingebundener Quelle, dann die zuerst erfasste (Original)."""
+    html = r.rel.lower().endswith((".html", ".htm"))
+    return (not html, r.root != "inbox", r.id)
+
+
+def deduplicate(records: list[FileRecord]) -> tuple[list[FileRecord], dict[int, list[FileRecord]]]:
+    """Redundanzen entfernen:
+    1. identischer Inhalt (SHA-256) -> nur eine Datei,
+    2. derselbe AWR-/Oracle-Report in mehreren Formaten (gleiche DB, Instanz,
+       Report-Typ und Snap-IDs, z.B. .html und .txt) -> HTML behalten.
+    Liefert (behaltene Datensätze, {id_behalten: [ausgelassene Duplikate]})."""
+    dups: dict[int, list[FileRecord]] = {}
+    keep: dict[tuple, FileRecord] = {}
+
+    def key_of(r: FileRecord) -> Optional[tuple]:
+        i = r.info
+        if r.category == detect.AWR and i.get("begin_snap") is not None and i.get("end_snap") is not None:
+            return ("awr", i.get("report_type"), i.get("db_name"), i.get("instance"), i.get("begin_snap"),
+                    i.get("end_snap"), tuple(map(tuple, i.get("periods") or [])))
+        if i.get("sha256"):
+            return ("sha", r.category, i["sha256"])
+        return None
+
+    out: list[FileRecord] = []
+    for r in sorted(records, key=_preference):
+        k = key_of(r) if r.category in detect.PACKABLE else None
+        if k is None:
+            out.append(r)
+            continue
+        if k in keep:
+            dups.setdefault(keep[k].id, []).append(r)
+            continue
+        # gleicher Inhalt wie ein bereits behaltener Report (anderer Schlüsseltyp)?
+        sha_key = ("sha", r.category, r.info.get("sha256"))
+        if k[0] == "awr" and r.info.get("sha256") and sha_key in keep:
+            dups.setdefault(keep[sha_key].id, []).append(r)
+            continue
+        keep[k] = r
+        if k[0] == "awr" and r.info.get("sha256"):
+            keep[sha_key] = r
+        out.append(r)
+    return sorted(out, key=lambda r: r.id), dups
+
+
 def has_log_candidates(w: Window, records: list[FileRecord]) -> bool:
     """Schnelle Vorab-Prüfung (Katalog): überschneidet sich eine Log-Datei mit dem Fenster?
     Die genaue Prüfung auf Zeilenebene erfolgt in build()."""
@@ -89,6 +135,7 @@ def plan_windows(records: list[FileRecord], mode: str, prefix: str = "BORA", mar
     nur für Tage mit AWR-Report, andere Oracle-Reports nur zusammen mit einem AWR."""
     if mode not in MODES:
         raise ValueError(f"Unbekannter Modus: {mode}")
+    records, _ = deduplicate(records)
     usable = [r for r in records if r.category in detect.PACKABLE and r.first and r.last]
     awrs = [r for r in usable if r.category == detect.AWR]
     windows: dict[str, Window] = {}
@@ -229,6 +276,7 @@ def build(records: list[FileRecord], windows: list[Window], out_dir: Path, work_
     (z.B. AWR-Report ohne Logs) erhalten kein Paket."""
     out_dir.mkdir(parents=True, exist_ok=True)
     work_dir.mkdir(parents=True, exist_ok=True)
+    records, dups = deduplicate(records)
     logs = [r for r in records if r.category in detect.LOG_CATEGORIES and r.first and r.last]
     by_day = {w.start.date().isoformat(): i for i, w in enumerate(windows)} if mode == "day" else None
     results: list[dict] = []
@@ -248,7 +296,7 @@ def build(records: list[FileRecord], windows: list[Window], out_dir: Path, work_
             if not slices and (require_logs or not w.awr):
                 continue  # keine Log-Zeilen im Zeitraum -> kein Paket
             progress(f"Erzeuge {w.name}.zip ({idx + 1}/{len(windows)})", 80 + idx * 20 / max(len(windows), 1))
-            results.append(_write_zip(w, slices, out_dir, mode))
+            results.append(_write_zip(w, slices, out_dir, mode, dups))
             shutil.rmtree(tmp / str(idx), ignore_errors=True)
     return results
 
@@ -267,7 +315,14 @@ def _add(zf: zipfile.ZipFile, src: Path, arcname: str, stamp: datetime) -> None:
         shutil.copyfileobj(fh, out, 4 * 1024 * 1024)
 
 
-def _write_zip(w: Window, slices: list[tuple[FileRecord, _Slice]], out_dir: Path, mode: str) -> dict:
+def _write_zip(w: Window, slices: list[tuple[FileRecord, _Slice]], out_dir: Path, mode: str,
+               dups: Optional[dict[int, list[FileRecord]]] = None) -> dict:
+    dups = dups or {}
+
+    def dup_info(rec: FileRecord) -> dict:
+        d = dups.get(rec.id)
+        return {"duplikate_ausgelassen": [f"{x.root}/{x.rel}" for x in d]} if d else {}
+
     target = out_dir / f"{w.name}.zip"
     part = target.with_suffix(".zip.part")
     manifest: dict = {
@@ -295,7 +350,8 @@ def _write_zip(w: Window, slices: list[tuple[FileRecord, _Slice]], out_dir: Path
             manifest["dateien"].append({
                 "eintrag": arc, "kategorie": detect.AWR, "quelle": f"{a.root}/{a.rel}",
                 "von": a.first.isoformat() if a.first else None,
-                "bis": a.last.isoformat() if a.last else None, **{k: v for k, v in a.info.items() if v},
+                "bis": a.last.isoformat() if a.last else None,
+                **{k: v for k, v in a.info.items() if v and k != "sha256"}, **dup_info(a),
             })
         for rec, sl in sorted(slices, key=lambda t: (t[0].category, t[0].root, t[0].rel)):
             arc = unique(entry_name(rec))
@@ -303,7 +359,7 @@ def _write_zip(w: Window, slices: list[tuple[FileRecord, _Slice]], out_dir: Path
             manifest["dateien"].append({
                 "eintrag": arc, "kategorie": rec.category, "quelle": f"{rec.root}/{rec.rel}",
                 "zeilen": sl.lines, "von": sl.first.isoformat() if sl.first else None,
-                "bis": sl.last.isoformat() if sl.last else None,
+                "bis": sl.last.isoformat() if sl.last else None, **dup_info(rec),
             })
         minfo = zipfile.ZipInfo("manifest.json", date_time=_zip_time(w.timestamp))
         minfo.compress_type = zipfile.ZIP_DEFLATED

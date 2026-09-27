@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import gzip
+import hashlib
 import html
 import re
 from dataclasses import dataclass, field
@@ -108,6 +109,7 @@ class AwrInfo:
     instance: Optional[str] = None
     report_type: Optional[str] = None
     time_source: Optional[str] = None
+    sha256: str = ""
     # Einzelne Analysezeiträume; bei AWR-Compare zwei getrennte Perioden
     periods: list[tuple[datetime, datetime]] = field(default_factory=list)
 
@@ -146,12 +148,20 @@ def parse_oracle_ts(value: str) -> Optional[datetime]:
     return parse_text(f"{m[1]} {hour:02d}:{m[3]}:{m[4] or '00'}")
 
 
+def file_sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with open_binary(path) as fh:
+        while chunk := fh.read(4 * 1024 * 1024):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
 def parse_awr(path: Path) -> AwrInfo:
     """Zeitfenster eines Oracle-Reports (AWR/ASH/ADDM/Statspack/Compare) bestimmen."""
     with open_binary(path) as fh:
         raw = fh.read(4 * 1024 * 1024)  # Kopfbereich reicht vollständig
     text = awr_text(raw)
-    info = AwrInfo(report_type=oracle_report_type(raw[:SNIFF_BYTES]))
+    info = AwrInfo(report_type=oracle_report_type(raw[:SNIFF_BYTES]), sha256=file_sha256(path))
     # 1) Snapshot-Intervall (AWR, AWR-Global, Statspack; Compare: beide Perioden)
     for kind, snap, ts in _RX_SNAP.findall(text):
         parsed = parse_oracle_ts(ts)
@@ -208,6 +218,7 @@ class LogInfo:
     lines: int = 0
     stamped_lines: int = 0
     days: set[str] = field(default_factory=set)
+    sha256: str = ""  # über den (entpackten) Inhalt - erkennt identische Dateien
 
 
 def scan_log(path: Path, progress: Optional[Callable[[float], None]] = None) -> LogInfo:
@@ -217,8 +228,10 @@ def scan_log(path: Path, progress: Optional[Callable[[float], None]] = None) -> 
     size = path.stat().st_size
     report = progress is not None and not is_gzip(path) and size > 0
     read = 0
+    digest = hashlib.sha256()
     with open_binary(path) as fh:
         for line in fh:
+            digest.update(line)
             info.lines += 1
             if report:
                 read += len(line)
@@ -233,6 +246,7 @@ def scan_log(path: Path, progress: Optional[Callable[[float], None]] = None) -> 
             if info.last is None or ts > info.last:
                 info.last = ts
             info.days.add(ts.date().isoformat())
+    info.sha256 = digest.hexdigest()
     return info
 
 
