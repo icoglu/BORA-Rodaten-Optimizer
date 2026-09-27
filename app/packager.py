@@ -76,6 +76,12 @@ def is_awr_report(rec: FileRecord) -> bool:
     return (rec.info.get("report_type") or "AWR").upper().startswith("AWR")
 
 
+def has_log_candidates(w: Window, records: list[FileRecord]) -> bool:
+    """Schnelle Vorab-Prüfung (Katalog): überschneidet sich eine Log-Datei mit dem Fenster?
+    Die genaue Prüfung auf Zeilenebene erfolgt in build()."""
+    return any(r.category in detect.LOG_CATEGORIES and w.overlaps(r.first, r.last) for r in records)
+
+
 def plan_windows(records: list[FileRecord], mode: str, prefix: str = "BORA", margin_min: int = 0,
                  date_from: Optional[date] = None, date_to: Optional[date] = None,
                  require_awr: bool = True) -> list[Window]:
@@ -217,7 +223,10 @@ def _slice_log(rec: FileRecord, windows: list[Window], by_day: Optional[dict[str
 
 
 def build(records: list[FileRecord], windows: list[Window], out_dir: Path, work_dir: Path,
-          mode: str, progress: Callable[..., None] = lambda *_a: None) -> list[dict]:
+          mode: str, progress: Callable[..., None] = lambda *_a: None,
+          require_logs: bool = True) -> list[dict]:
+    """ZIPs erzeugen. ``require_logs``: Zeitfenster ohne passende Log-Zeilen
+    (z.B. AWR-Report ohne Logs) erhalten kein Paket."""
     out_dir.mkdir(parents=True, exist_ok=True)
     work_dir.mkdir(parents=True, exist_ok=True)
     logs = [r for r in records if r.category in detect.LOG_CATEGORIES and r.first and r.last]
@@ -236,8 +245,8 @@ def build(records: list[FileRecord], windows: list[Window], out_dir: Path, work_
         # 2) Ein ZIP je Zeitfenster
         for idx, w in enumerate(windows):
             slices = per_window.get(idx, [])
-            if not slices and not w.awr:
-                continue
+            if not slices and (require_logs or not w.awr):
+                continue  # keine Log-Zeilen im Zeitraum -> kein Paket
             progress(f"Erzeuge {w.name}.zip ({idx + 1}/{len(windows)})", 80 + idx * 20 / max(len(windows), 1))
             results.append(_write_zip(w, slices, out_dir, mode))
             shutil.rmtree(tmp / str(idx), ignore_errors=True)

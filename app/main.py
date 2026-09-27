@@ -103,8 +103,11 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
         planned = packager.plan_windows(records, "day", settings.zip_prefix, require_awr=settings.require_awr)
         windows = [w for w in planned if w.start.date().isoformat() in days]
         built = packager.build(records, windows, settings.output_dir, settings.work_dir, "day",
-                               lambda msg, pct=None: progress(f"Tages-Pakete: {msg}", pct)) if windows else []
-        valid = {f"{w.name}.zip" for w in planned}
+                               lambda msg, pct=None: progress(f"Tages-Pakete: {msg}", pct),
+                               require_logs=settings.require_logs) if windows else []
+        # gültig: neu gebaute + unveränderte bestehende (nicht neu geprüfte) Tage
+        rebuilt = {f"{w.name}.zip" for w in windows}
+        valid = {b["zip"] for b in built} | ({f"{w.name}.zip" for w in planned} - rebuilt)
         removed = 0
         for p in settings.output_dir.glob("*.zip"):   # auch Tage ohne (mehr) AWR-Report entfernen
             if day_zip.match(p.name) and p.name not in valid:
@@ -131,8 +134,11 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
                 if not (settings.output_dir / f"{w.name}.zip").exists()
                 or any(d in days for d in detect.days_between(w.start, w.end - timedelta(seconds=1)))]
         built = packager.build(records, todo, settings.output_dir, settings.work_dir, "awr",
-                               lambda msg, pct=None: progress(f"AWR-Pakete: {msg}", pct)) if todo else []
-        valid = {f"{w.name}.zip" for w in windows}
+                               lambda msg, pct=None: progress(f"AWR-Pakete: {msg}", pct),
+                               require_logs=settings.require_logs) if todo else []
+        # gültig: neu gebaute + unveränderte bestehende; neu geprüfte ohne Log-Zeilen -> entfernen
+        rechecked = {f"{w.name}.zip" for w in todo}
+        valid = {b["zip"] for b in built} | ({f"{w.name}.zip" for w in windows} - rechecked)
         removed = 0
         for p in settings.output_dir.glob("*.zip"):
             if awr_zip.match(p.name) and p.name not in valid:
@@ -207,13 +213,16 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
             counts[f.category] += 1
         plan_day = packager.plan_windows(files, "day", settings.zip_prefix, require_awr=settings.require_awr)
         plan_awr = packager.plan_windows(files, "awr", settings.zip_prefix, require_awr=settings.require_awr)
+        if settings.require_logs:
+            plan_day = [w for w in plan_day if packager.has_log_candidates(w, files)]
+            plan_awr = [w for w in plan_awr if packager.has_log_candidates(w, files)]
         return templates.TemplateResponse(request, "index.html", {
             "files": files, "counts": counts, "categories": detect.CATEGORIES,
             "outputs": outputs(), "job": jobs.state, "msg": msg, "level": level,
             "plan_day": plan_day, "plan_awr": plan_awr, "roots": roots(),
             "warnings": [c for c in getattr(app.state, "selfcheck", []) if not c["ok"]],
             "auto_package": settings.auto_package, "require_awr": settings.require_awr,
-            "day_packages": settings.day_packages,
+            "day_packages": settings.day_packages, "require_logs": settings.require_logs,
             "has_awr": any(f.category == detect.AWR and packager.is_awr_report(f) for f in files),
         })
 
@@ -332,8 +341,9 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
                                             require_awr=settings.require_awr)
             if not windows:
                 return {"zips": [], "hinweis": "Keine passenden Zeitfenster gefunden"}
-            return {"zips": packager.build(records, windows, settings.output_dir,
-                                           settings.work_dir, mode, progress)}
+            zips = packager.build(records, windows, settings.output_dir, settings.work_dir, mode, progress,
+                                  require_logs=settings.require_logs)
+            return {"zips": zips} if zips else {"zips": [], "hinweis": "Keine Log-Zeilen in den AWR-Zeiträumen – kein Paket"}
 
         if not jobs.submit("Paketierung", run):
             return back("Es läuft bereits ein Job.", "warn")

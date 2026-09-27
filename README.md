@@ -40,6 +40,12 @@ werden zusätzlich alle Dateien pro Tag zusammengeführt →
 `BORA_2026-09-27.zip` (ganze Tage, nur für Tage mit AWR-Report). Per Button
 jederzeit auch manuell möglich.
 
+**AWR-Report ohne Logs: kein Paket.** Findet sich zum AWR-Report keine
+Log-Zeile in seiner Snap Time (auch wenn Logs aus anderen Zeiträumen
+vorliegen), wird kein Paket erzeugt. Kommen passende Logs später dazu,
+entsteht das Paket automatisch; werden sie gelöscht, wird es entfernt.
+Abschaltbar mit `BORA_REQUIRE_LOGS=0`.
+
 **Ohne AWR-Report kein Paket.** Liegt kein AWR-Report vor, wird kein Paket
 erzeugt (auch nicht per Button); ASH-/ADDM-/Statspack-Reports ohne
 überschneidenden AWR-Zeitraum und Tage ohne AWR-Report erhalten kein Paket.
@@ -228,6 +234,7 @@ erfasst. Vollständig inkl. Volume: `docker compose down -v`.
 | `BORA_SOURCE_DIRS` | – | zusätzliche Quellverzeichnisse, `:`-getrennt (read-only genügt) |
 | `BORA_ZIP_PREFIX` | `BORA` | Präfix der ZIP-Namen |
 | `BORA_DAY_PACKAGES` | `0` | Zusätzlich Tages-Pakete (ganze Tage) automatisch erzeugen |
+| `BORA_REQUIRE_LOGS` | `1` | AWR-Report ohne passende Log-Zeilen in der Snap Time → kein Paket |
 | `BORA_REQUIRE_AWR` | `1` | Ohne AWR-Report kein Paket (`0` = auch Tage/Reports ohne AWR paketieren) |
 | `BORA_AWR_MARGIN_MIN` | `0` | Puffer in Minuten um den AWR-Zeitraum bei automatischen AWR-Paketen |
 | `BORA_AUTO_PACKAGE` | `1` | Tages-Pakete nach jedem Upload/Einlesen automatisch erstellen (`0` = aus) |

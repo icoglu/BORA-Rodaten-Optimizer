@@ -112,11 +112,8 @@ def test_auto_day_packages(tmp_path: Path):
         fid = next(f["id"] for f in c.get("/api/files").json() if f["rel"] == "wls01/access.log")
         c.post(f"/files/{fid}/delete")
         c.app.state.jobs.wait()
-        names = [o["name"] for o in c.get("/api/outputs").json()]
-        assert names == ["BORA_2026-09-27.zip", "BORA_2026-09-27_1000-1100.zip"]
-        for n in names:
-            z = zipfile.ZipFile(io.BytesIO(c.get(f"/download/{n}").content))
-            assert not any(e.startswith("access/") for e in z.namelist())
+        # einzige Log-Datei gelöscht -> AWR-Report ohne Logs -> keine Pakete mehr
+        assert c.get("/api/outputs").json() == []
 
 
 def test_auto_package_can_be_disabled(tmp_path: Path):
@@ -136,7 +133,7 @@ def test_category_change_updates_day_packages(tmp_path: Path):
         fid = next(f["id"] for f in c.get("/api/files").json() if f["rel"] == "wls01/access.log")
         c.post(f"/files/{fid}/category", data={"category": "ignore"})
         c.app.state.jobs.wait()
-        assert [o["name"] for o in c.get("/api/outputs").json()] == ["BORA_2026-09-27.zip", "BORA_2026-09-27_1000-1100.zip"]
+        assert c.get("/api/outputs").json() == []   # Log ignoriert -> AWR ohne Logs -> kein Paket
         c.post(f"/files/{fid}/category", data={"category": "auto"})
         c.app.state.jobs.wait()
         assert [o["name"] for o in c.get("/api/outputs").json()] == ["BORA_2026-09-27.zip", "BORA_2026-09-27_1000-1100.zip"]
@@ -279,3 +276,23 @@ def test_default_only_awr_packages_with_snap_time_lines(tmp_path: Path):
         assert len(access) < len(ACCESS) and len(server) < len(SERVER)                      # nicht die ganzen Dateien
         assert access == b'10.0.0.3 - - [27/Sep/2026:10:15:00 +0200] "GET /bora/list HTTP/1.1" 200 2048\n'
         assert b"10:05:00" in server and b"10:20:00" in server and b"1:05:00,000 PM" not in server
+
+
+def test_awr_without_logs_no_package(tmp_path: Path):
+    """AWR-Report ohne passende Log-Zeilen in der Snap Time -> kein Paket; kommen Logs dazu -> Paket."""
+    from .conftest import SERVER_ROTATED
+    with _client(tmp_path / "data") as c:
+        c.app.state.jobs.wait()
+        c.put("/api/upload", params={"name": "awrrpt_1_100_101.html", "source": "db"}, content=AWR_HTML.encode())
+        c.app.state.jobs.wait()
+        assert c.get("/api/outputs").json() == []                      # nur AWR
+        c.put("/api/upload", params={"name": "server1.log", "source": "wls01"}, content=SERVER_ROTATED.encode())
+        c.app.state.jobs.wait()
+        assert c.get("/api/outputs").json() == []                      # Log nur vom 26.09. 23:00 -> passt nicht
+        c.post("/build", data={"mode": "awr"})                         # auch per Button nicht
+        c.app.state.jobs.wait()
+        assert c.get("/api/outputs").json() == []
+        assert "kein Paket" in c.get("/api/status").json()["result"]["hinweis"]
+        c.put("/api/upload", params={"name": "access.log", "source": "wls01"}, content=ACCESS.encode())
+        c.app.state.jobs.wait()
+        assert [o["name"] for o in c.get("/api/outputs").json()] == ["BORA_2026-09-27_1000-1100.zip"]
