@@ -52,14 +52,22 @@ Grundsätze:
 
 ```bash
 docker compose up -d --build
-# GUI: http://localhost:8080
+# GUI: http://localhost:8088
+```
+
+Ist Port 8088 belegt, einen anderen Host-Port wählen – z. B. in `.env`
+(Vorlage: `.env.example`):
+
+```bash
+echo "BORA_PORT=9090" > .env
+docker compose up -d
 ```
 
 Oder ohne Compose:
 
 ```bash
 docker build -t bora-rodaten-optimizer .
-docker run -d -p 8080:8080 -v bora-data:/data \
+docker run -d -p 8088:8088 -v bora-data:/data \
   -v /pfad/zu/logs:/sources/logs:ro -e BORA_SOURCE_DIRS=/sources/logs \
   bora-rodaten-optimizer
 ```
@@ -91,13 +99,14 @@ docker run -d -p 8080:8080 -v bora-data:/data \
 Upload per Kommandozeile (z. B. direkt vom Server):
 
 ```bash
-curl -T logs.zip "http://bora-host:8080/api/upload?name=logs.zip&source=wls-prod-01"
+curl -T logs.zip "http://bora-host:8088/api/upload?name=logs.zip&source=wls-prod-01"
 ```
 
 ## Konfiguration
 
 | Variable | Standard | Bedeutung |
 |----------|----------|-----------|
+| `BORA_PORT` | `8088` | Port der GUI; in Compose (`.env`) der Host-Port, bei `docker run` der Port im Container |
 | `BORA_DATA_DIR` | `/data` | Volume für Inbox, Katalog, Ausgabe |
 | `BORA_SOURCE_DIRS` | – | zusätzliche Quellverzeichnisse, `:`-getrennt (read-only genügt) |
 | `BORA_ZIP_PREFIX` | `BORA` | Präfix der ZIP-Namen |
@@ -125,7 +134,7 @@ Verzeichnisse im Volume: `inbox/` (Uploads), `output/` (ZIP-Pakete),
 ```bash
 pip install -r requirements-dev.txt
 pytest -q
-BORA_DATA_DIR=./data uvicorn app.main:create_app --factory --reload --port 8080
+BORA_DATA_DIR=./data uvicorn app.main:create_app --factory --reload --port 8088
 ```
 
 Aufbau: `app/detect.py` (Kategorisierung, Oracle-Report-Parser),
