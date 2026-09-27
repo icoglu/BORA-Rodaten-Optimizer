@@ -7,7 +7,7 @@ import re
 import secrets
 import tempfile
 from contextlib import asynccontextmanager
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Optional
 from urllib.parse import urlencode
@@ -115,6 +115,38 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
             out["tagespakete_entfernt"] = removed
         return out
 
+    awr_zip = re.compile(re.escape(settings.zip_prefix) + r"_\d{4}-\d{2}-\d{2}_\d{4}-(\d{4}|\d{4}-\d{2}-\d{2}_\d{4})\.zip$")
+
+    def repackage_awr(days: set[str], progress) -> dict:
+        """Regel 1: Je AWR-Aufzeichnungszeitraum ein ZIP mit AWR-Report(s), passenden
+        Log-Zeilen und überschneidenden Oracle-Reports. Neu erstellt werden Zeiträume
+        auf geänderten Tagen und fehlende Pakete; nicht mehr gültige werden entfernt."""
+        if not settings.auto_package:
+            return {}
+        records = catalog.all()
+        windows = packager.plan_windows(records, "awr", settings.zip_prefix, settings.awr_margin_min)
+        todo = [w for w in windows
+                if not (settings.output_dir / f"{w.name}.zip").exists()
+                or any(d in days for d in detect.days_between(w.start, w.end - timedelta(seconds=1)))]
+        built = packager.build(records, todo, settings.output_dir, settings.work_dir, "awr",
+                               lambda msg, pct=None: progress(f"AWR-Pakete: {msg}", pct)) if todo else []
+        valid = {f"{w.name}.zip" for w in windows}
+        removed = 0
+        for p in settings.output_dir.glob("*.zip"):
+            if awr_zip.match(p.name) and p.name not in valid:
+                p.unlink()
+                removed += 1
+        out = {"awr_pakete_aktualisiert": len(built)}
+        if removed:
+            out["awr_pakete_entfernt"] = removed
+        return out
+
+    def repackage(days: set[str], progress) -> dict:
+        """Regel 1: AWR-Zeiträume, Regel 2: Tage."""
+        out = repackage_awr(days, progress)
+        out.update(repackage_days(days, progress))
+        return out
+
     def missing_day_packages() -> set[str]:
         return {d for d in catalog.all_days()
                 if not (settings.output_dir / f"{settings.zip_prefix}_{d}.zip").exists()}
@@ -123,7 +155,7 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
         extracted = archives.extract_pending(settings.inbox_dir, progress, settings.skip_extract)
         result = catalog.scan(roots(), progress)
         if settings.auto_package:
-            result.update(repackage_days(catalog.last_changed_days | missing_day_packages(), progress))
+            result.update(repackage(catalog.last_changed_days | missing_day_packages(), progress))
         if extracted["archive"] or extracted["fehler"]:
             result.update({"archive_entpackt": extracted["archive"], "dateien_aus_archiven": extracted["entpackt"]})
         if extracted["uebersprungen"]:
@@ -254,7 +286,7 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
         def job(progress):
             # Zeitraum mit dem Parser der (neuen) Kategorie ermitteln, betroffene Tage neu paketieren
             catalog.reanalyse(file_id)
-            return repackage_days(catalog.last_changed_days | set(rec.days), progress)
+            return repackage(catalog.last_changed_days | set(rec.days), progress)
 
         jobs.submit_or_queue("Neuanalyse", job)
         label = "automatische Kategorie" if category == "auto" else f"Kategorie → {category}"
@@ -270,7 +302,7 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
         rec.path.unlink(missing_ok=True)
         catalog.remove(file_id)
         days = set(rec.days)
-        jobs.submit_or_queue("Tages-Pakete", lambda p: repackage_days(days, p))
+        jobs.submit_or_queue("Pakete", lambda p: repackage(days, p))
         return back(f"{rec.rel} gelöscht")
 
     # ------------------------------------------------------------- Paketieren

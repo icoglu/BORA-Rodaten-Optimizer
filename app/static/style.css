@@ -79,3 +79,4 @@ code { font-size: 12px; }
 @media (prefers-reduced-motion: reduce) { .meter > span { transition: none; } .meter.indet > span { animation: none; width: 100% !important; opacity: .45; } }
 @media (forced-colors: active) { .meter { border: 1px solid CanvasText; } .meter > span { background: Highlight; } }
 .auto-note { margin: 0 0 12px; padding: 8px 12px; border-left: 3px solid var(--ok); background: color-mix(in srgb, var(--ok) 8%, transparent); border-radius: 4px; font-size: 13px; }
+.auto-note ol { margin: 6px 0 6px 18px; padding: 0; } .auto-note li { margin-bottom: 4px; }

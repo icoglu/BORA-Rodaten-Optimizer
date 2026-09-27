@@ -70,17 +70,24 @@
 <section class="card">
   <h2>3 · Pakete erstellen</h2>
   {% if auto_package %}
-  <p class="auto-note">✓ <strong>Automatisch:</strong> Nach jedem Upload bzw. Einlesen werden alle Dateien anhand
-    der Zeitstempel in ihrem Inhalt <strong>pro Tag</strong> zu <code>BORA_JJJJ-MM-TT.zip</code> zusammengeführt –
-    nur geänderte Tage werden neu erstellt.</p>
+  <div class="auto-note">
+    <strong>Automatisch nach jedem Upload/Einlesen:</strong>
+    <ol>
+      <li><strong>Regel 1 – AWR-Zeitraum:</strong> Für jeden AWR-Report wird der Aufzeichnungszeitraum
+        (Begin/End Snap) erkannt; dazu werden die Log-Zeilen dieses Zeitraums und überschneidende
+        Oracle-Reports (ASH, ADDM, Statspack) zusammengeführt → <code>BORA_JJJJ-MM-TT_HHMM-HHMM.zip</code></li>
+      <li><strong>Regel 2 – Tag:</strong> alle Dateien pro Tag → <code>BORA_JJJJ-MM-TT.zip</code></li>
+    </ol>
+    Nur geänderte Zeiträume/Tage werden neu erstellt.
+  </div>
   {% endif %}
   <form action="/build" method="post">
     <fieldset>
-      <legend>Zeitrahmen-Regel</legend>
-      <label class="radio"><input type="radio" name="mode" value="day" checked>
-        Pro Kalendertag – <code>BORA_JJJJ-MM-TT.zip</code> ({{ plan_day|length }} Pakete)</label>
-      <label class="radio"><input type="radio" name="mode" value="awr">
-        Pro AWR-Snapshot-Intervall – <code>BORA_JJJJ-MM-TT_HHMM-HHMM.zip</code> ({{ plan_awr|length }} Pakete)</label>
+      <legend>Manuell neu erstellen</legend>
+      <label class="radio"><input type="radio" name="mode" value="awr" {% if plan_awr %}checked{% endif %}>
+        Regel 1 · Pro AWR-Aufzeichnungszeitraum – <code>BORA_JJJJ-MM-TT_HHMM-HHMM.zip</code> ({{ plan_awr|length }} Pakete)</label>
+      <label class="radio"><input type="radio" name="mode" value="day" {% if not plan_awr %}checked{% endif %}>
+        Regel 2 · Pro Kalendertag – <code>BORA_JJJJ-MM-TT.zip</code> ({{ plan_day|length }} Pakete)</label>
     </fieldset>
     <div class="row">
       <label>von <input type="date" name="date_from"></label>

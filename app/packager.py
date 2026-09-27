@@ -71,6 +71,11 @@ def awr_periods(rec: FileRecord) -> list[tuple[datetime, datetime]]:
     return periods
 
 
+def is_awr_report(rec: FileRecord) -> bool:
+    """Echter AWR-Report (auch RAC/Global/Compare) - im Gegensatz zu ASH/ADDM/Statspack."""
+    return (rec.info.get("report_type") or "AWR").upper().startswith("AWR")
+
+
 def plan_windows(records: list[FileRecord], mode: str, prefix: str = "BORA", margin_min: int = 0,
                  date_from: Optional[date] = None, date_to: Optional[date] = None) -> list[Window]:
     if mode not in MODES:
@@ -92,21 +97,41 @@ def plan_windows(records: list[FileRecord], mode: str, prefix: str = "BORA", mar
         for w in windows.values():
             w.awr = [a for a in awrs if any(w.overlaps(b, e) for b, e in awr_periods(a))]
     else:
+        # Regel 1: Jeder AWR-Report (HTML/Text) bestimmt einen Aufzeichnungszeitraum.
+        # Dazu werden die Log-Zeilen dieses Zeitraums und alle anderen Oracle-Reports
+        # (ASH, ADDM, Statspack), die sich damit überschneiden, zusammengeführt.
         margin = timedelta(minutes=max(margin_min, 0))
-        for a in sorted(awrs, key=lambda r: r.first):  # type: ignore[arg-type,return-value]
-            for begin, end in awr_periods(a):
-                if not (_in_range(begin.date(), date_from, date_to) or _in_range(end.date(), date_from, date_to)):
-                    continue
-                name = f"{prefix}_{_fmt_range(begin, end)}"
-                start, stop = begin - margin, end + margin + timedelta(seconds=1)
-                w = windows.get(name)
-                if w is None:
-                    windows[name] = Window(name, start, stop, [a], stamp=begin.replace(second=0))
-                else:  # z.B. RAC: mehrere Instanzen im selben Snapshot-Intervall
-                    w.start, w.end = min(w.start, start), max(w.end, stop)
-                    w.stamp = min(w.timestamp, begin.replace(second=0))
-                    if a not in w.awr:
-                        w.awr.append(a)
+        primary = [r for r in awrs if is_awr_report(r)]
+        secondary = [r for r in awrs if not is_awr_report(r)]
+
+        def add_window(rep: FileRecord, begin: datetime, end: datetime) -> None:
+            name = f"{prefix}_{_fmt_range(begin, end)}"
+            start, stop = begin - margin, end + margin + timedelta(seconds=1)
+            w = windows.get(name)
+            if w is None:
+                windows[name] = Window(name, start, stop, [rep], stamp=begin.replace(second=0))
+            else:  # z.B. RAC: mehrere Instanzen im selben Snapshot-Intervall
+                w.start, w.end = min(w.start, start), max(w.end, stop)
+                w.stamp = min(w.timestamp, begin.replace(second=0))
+                if rep not in w.awr:
+                    w.awr.append(rep)
+
+        def wanted(begin: datetime, end: datetime) -> bool:
+            return _in_range(begin.date(), date_from, date_to) or _in_range(end.date(), date_from, date_to)
+
+        for rep in sorted(primary, key=lambda r: r.first):  # type: ignore[arg-type,return-value]
+            for begin, end in awr_periods(rep):
+                if wanted(begin, end):
+                    add_window(rep, begin, end)
+        awr_windows = list(windows.values())
+        for rep in sorted(secondary, key=lambda r: r.first):  # type: ignore[arg-type,return-value]
+            for begin, end in awr_periods(rep):
+                hits = [w for w in awr_windows if w.overlaps(begin, end)]
+                for w in hits:
+                    if rep not in w.awr:
+                        w.awr.append(rep)
+                if not hits and wanted(begin, end):  # kein passender AWR-Zeitraum: eigenes Paket
+                    add_window(rep, begin, end)
     return sorted(windows.values(), key=lambda w: (w.start, w.name))
 
 

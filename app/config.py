@@ -23,6 +23,8 @@ class Settings:
     skip_extract: tuple = field(default_factory=lambda: tuple(
         s.strip().lower() if s.strip().startswith(".") else "." + s.strip().lower()
         for s in os.environ.get("BORA_SKIP_EXTRACT", ".ear,.war,.jar,.rar").split(",") if s.strip()))
+    # Puffer in Minuten um den AWR-Aufzeichnungszeitraum bei automatischen AWR-Paketen
+    awr_margin_min: int = field(default_factory=lambda: int(os.environ.get("BORA_AWR_MARGIN_MIN", "0")))
     max_upload_mb: int = field(default_factory=lambda: int(os.environ.get("BORA_MAX_UPLOAD_MB", "0")))
     auth_user: str = field(default_factory=lambda: os.environ.get("BORA_USER", ""))
     auth_password: str = field(default_factory=lambda: os.environ.get("BORA_PASSWORD", ""))

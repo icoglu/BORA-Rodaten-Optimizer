@@ -14,24 +14,29 @@ Web-GUI im Docker-Container, die Rohdaten zur Performance-Analyse **sammelt**,
 Die Kategorie wird primär am **Inhalt** erkannt (Dateiname nur als Rückfallebene)
 und lässt sich pro Datei in der GUI übersteuern.
 
-## Paketierungsregel
+## Paketierungsregeln
 
-> Alle Reports werden passend zum Zeitrahmen zusammengeführt und in einzelne,
-> mit Datum gekennzeichnete ZIP-Pakete geschrieben.
+Beide Regeln laufen **automatisch nach jedem Upload bzw. Einlesen**; neu
+erstellt werden nur betroffene Zeiträume/Tage, nicht mehr gültige Pakete
+werden entfernt (abschaltbar mit `BORA_AUTO_PACKAGE=0`).
 
-| Modus | ZIP-Name | Inhalt |
-|-------|----------|--------|
-| **Pro Kalendertag** (Standard) | `BORA_2026-09-27.zip` | alle Oracle-Reports, deren Intervall den Tag berührt, und genau die Access-/Server-Log-Zeilen dieses Tages |
-| **Pro AWR-Intervall** | `BORA_2026-09-27_1000-1100.zip` | der/die Reports des Snapshot-Intervalls (RAC-Instanzen zusammengeführt) und die Log-Zeilen darin, optional ± Puffer in Minuten |
+**Regel 1 – AWR-Aufzeichnungszeitraum (Vorrang).** Für jeden AWR-Report
+(HTML oder Text, auch RAC/Global/Compare) wird der Aufzeichnungszeitraum
+(Begin Snap – End Snap) erkannt. Dazu werden zusammengeführt:
 
-Optional lässt sich der Zeitraum per *von/bis* einschränken.
+* alle `access.log*`- und `server*.log*`-Zeilen dieses Zeitraums (optional
+  ± Puffer: `BORA_AWR_MARGIN_MIN`),
+* alle anderen Oracle-Reports (ASH, ADDM, Statspack), deren Zeitraum sich
+  mit dem AWR-Zeitraum überschneidet.
 
-**Automatisch pro Tag:** Nach jedem Upload bzw. Einlesen werden alle Dateien
-anhand der Zeitstempel in ihrem Inhalt pro Tag zu `BORA_JJJJ-MM-TT.zip`
-zusammengeführt – ohne Klick. Neu erstellt werden nur die Tage, deren Daten
-sich geändert haben (neue/geänderte/gelöschte Datei, geänderte Kategorie);
-Tage ohne Daten verlieren ihr veraltetes ZIP. Abschalten mit
-`BORA_AUTO_PACKAGE=0`. Die Pakete pro AWR-Intervall bleiben per Button möglich.
+→ `BORA_2026-09-27_1000-1100.zip`. Oracle-Reports ohne überschneidenden
+AWR-Zeitraum erhalten ein eigenes Paket – es geht nichts verloren.
+
+**Regel 2 – Kalendertag.** Alle Dateien werden anhand der Zeitstempel in
+ihrem Inhalt pro Tag zusammengeführt → `BORA_2026-09-27.zip`.
+
+Manuell (Button) lassen sich beide Varianten zusätzlich mit *von/bis* und
+Puffer neu erstellen.
 
 ZIP-Aufbau:
 
@@ -203,6 +208,7 @@ curl -T logs.zip "http://bora-host:8088/api/upload?name=logs.zip&source=wls-prod
 | `BORA_DATA_DIR` | `/data` | Volume für Inbox, Katalog, Ausgabe |
 | `BORA_SOURCE_DIRS` | – | zusätzliche Quellverzeichnisse, `:`-getrennt (read-only genügt) |
 | `BORA_ZIP_PREFIX` | `BORA` | Präfix der ZIP-Namen |
+| `BORA_AWR_MARGIN_MIN` | `0` | Puffer in Minuten um den AWR-Zeitraum bei automatischen AWR-Paketen |
 | `BORA_AUTO_PACKAGE` | `1` | Tages-Pakete nach jedem Upload/Einlesen automatisch erstellen (`0` = aus) |
 | `BORA_SKIP_EXTRACT` | `.ear,.war,.jar,.rar` | Java-Anwendungsarchive: werden beim Entpacken übersprungen, selbst nie entpackt und als `ignore` eingestuft |
 | `BORA_MAX_UPLOAD_MB` | `0` | Upload-Limit je Datei, `0` = unbegrenzt |

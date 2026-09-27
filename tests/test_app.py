@@ -47,7 +47,7 @@ def test_upload_scan_build_download(tmp_path: Path):
         status = c.get("/api/status").json()
         assert status["error"] is None, status
         names = [o["name"] for o in c.get("/api/outputs").json()]
-        assert names == ["BORA_2026-09-26.zip", "BORA_2026-09-27.zip"]
+        assert names == ["BORA_2026-09-26.zip", "BORA_2026-09-27.zip", "BORA_2026-09-27_1000-1100.zip"]
         r = c.get("/download/BORA_2026-09-27.zip")
         assert r.status_code == 200 and zipfile.ZipFile(io.BytesIO(r.content)).testzip() is None
         assert c.get("/download/..%2Fcatalog.sqlite3").status_code in (400, 404)
@@ -103,7 +103,8 @@ def test_auto_day_packages(tmp_path: Path):
         c.put("/api/upload", params={"name": "awrrpt_1_100_101.html", "source": "wls01"}, content=AWR_HTML.encode())
         c.app.state.jobs.wait()
         names = [o["name"] for o in c.get("/api/outputs").json()]
-        assert names == ["BORA_2026-09-26.zip", "BORA_2026-09-27.zip"]  # ohne Klick auf "Pakete erzeugen"
+        # ohne Klick: Regel 1 (AWR-Zeitraum) + Regel 2 (Tage)
+        assert names == ["BORA_2026-09-26.zip", "BORA_2026-09-27.zip", "BORA_2026-09-27_1000-1100.zip"]
         z = zipfile.ZipFile(io.BytesIO(c.get("/download/BORA_2026-09-27.zip").content))
         assert {"access/wls01/access.log", "awr/wls01/awrrpt_1_100_101.html"} <= set(z.namelist())
 
@@ -112,9 +113,10 @@ def test_auto_day_packages(tmp_path: Path):
         c.post(f"/files/{fid}/delete")
         c.app.state.jobs.wait()
         names = [o["name"] for o in c.get("/api/outputs").json()]
-        assert names == ["BORA_2026-09-27.zip"]
-        z = zipfile.ZipFile(io.BytesIO(c.get("/download/BORA_2026-09-27.zip").content))
-        assert not any(n.startswith("access/") for n in z.namelist())
+        assert names == ["BORA_2026-09-27.zip", "BORA_2026-09-27_1000-1100.zip"]
+        for n in names:
+            z = zipfile.ZipFile(io.BytesIO(c.get(f"/download/{n}").content))
+            assert not any(e.startswith("access/") for e in z.namelist())
 
 
 def test_auto_package_can_be_disabled(tmp_path: Path):
@@ -134,10 +136,11 @@ def test_category_change_updates_day_packages(tmp_path: Path):
         fid = next(f["id"] for f in c.get("/api/files").json() if f["rel"] == "wls01/access.log")
         c.post(f"/files/{fid}/category", data={"category": "ignore"})
         c.app.state.jobs.wait()
-        assert [o["name"] for o in c.get("/api/outputs").json()] == ["BORA_2026-09-27.zip"]
+        assert [o["name"] for o in c.get("/api/outputs").json()] == ["BORA_2026-09-27.zip", "BORA_2026-09-27_1000-1100.zip"]
         c.post(f"/files/{fid}/category", data={"category": "auto"})
         c.app.state.jobs.wait()
-        assert [o["name"] for o in c.get("/api/outputs").json()] == ["BORA_2026-09-26.zip", "BORA_2026-09-27.zip"]
+        assert [o["name"] for o in c.get("/api/outputs").json()] == [
+            "BORA_2026-09-26.zip", "BORA_2026-09-27.zip", "BORA_2026-09-27_1000-1100.zip"]
 
 
 def test_ear_files_are_not_extracted(tmp_path: Path):
@@ -168,3 +171,41 @@ def test_ear_files_are_not_extracted(tmp_path: Path):
         assert cats["direkt/bora.ear"] == "ignore"
         z = zipfile.ZipFile(io.BytesIO(c.get("/download/BORA_2026-09-27.zip").content))
         assert not any(n.endswith((".ear", ".jar", ".war")) for n in z.namelist())
+
+
+def test_rule_one_awr_period_collects_logs_and_other_reports(tmp_path: Path):
+    """Regel 1: AWR-HTML -> Aufzeichnungszeitraum erkennen, passende Logs und überschneidende
+    Oracle-Reports automatisch zusammenführen."""
+    from .conftest import SERVER
+    from .test_oracle_reports import ADDM_TXT, ASH_HTML
+    with _client(tmp_path / "data") as c:
+        c.app.state.jobs.wait()
+        for name, body in [("access.log", ACCESS), ("server1.log", SERVER), ("awrrpt_1_100_101.html", AWR_HTML),
+                           ("addmrpt_1.txt", ADDM_TXT), ("ashrpt_1.html", ASH_HTML)]:
+            c.put("/api/upload", params={"name": name, "source": "wls01"}, content=body.encode())
+        c.app.state.jobs.wait()
+        names = [o["name"] for o in c.get("/api/outputs").json()]
+        assert "BORA_2026-09-27_1000-1100.zip" in names                 # AWR 10:00:05-11:00:07
+        assert "BORA_2026-09-27_1000-1300.zip" not in names             # ADDM hängt am AWR, kein eigenes Paket
+        assert "BORA_2026-09-27_0930-0945.zip" in names                 # ASH ohne AWR-Überschneidung: eigenes Paket
+        z = zipfile.ZipFile(io.BytesIO(c.get("/download/BORA_2026-09-27_1000-1100.zip").content))
+        n = set(z.namelist())
+        assert {"awr/wls01/awrrpt_1_100_101.html", "awr/wls01/addmrpt_1.txt",
+                "access/wls01/access.log", "server/wls01/server1.log"} <= n
+        assert "awr/wls01/ashrpt_1.html" not in n                      # 09:30-09:45 liegt außerhalb
+        assert z.read("access/wls01/access.log").count(b"\n") == 1      # nur 10:15 aus dem Zeitraum
+        srv = z.read("server/wls01/server1.log")
+        assert b"NullPointerException" in srv and b"Nachmittag" not in srv
+
+
+def test_awr_package_removed_when_report_deleted(tmp_path: Path):
+    with _client(tmp_path / "data") as c:
+        c.app.state.jobs.wait()
+        c.put("/api/upload", params={"name": "access.log", "source": "wls01"}, content=ACCESS.encode())
+        c.put("/api/upload", params={"name": "awrrpt_1_100_101.html", "source": "wls01"}, content=AWR_HTML.encode())
+        c.app.state.jobs.wait()
+        assert "BORA_2026-09-27_1000-1100.zip" in [o["name"] for o in c.get("/api/outputs").json()]
+        fid = next(f["id"] for f in c.get("/api/files").json() if f["rel"].endswith(".html"))
+        c.post(f"/files/{fid}/delete")
+        c.app.state.jobs.wait()
+        assert [o["name"] for o in c.get("/api/outputs").json()] == ["BORA_2026-09-26.zip", "BORA_2026-09-27.zip"]
