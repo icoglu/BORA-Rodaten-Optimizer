@@ -1,0 +1,22 @@
+services:
+  bora-optimizer:
+    build: .
+    image: bora-rodaten-optimizer:latest
+    container_name: bora-rodaten-optimizer
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    environment:
+      TZ: Europe/Berlin
+      BORA_ZIP_PREFIX: BORA
+      # Read-only gemountete Quellverzeichnisse (":"-getrennt), zusätzlich zum Upload
+      BORA_SOURCE_DIRS: /sources/logs
+      # Optionale Basic-Auth - beide Werte setzen, um sie zu aktivieren
+      BORA_USER: ${BORA_USER:-}
+      BORA_PASSWORD: ${BORA_PASSWORD:-}
+    volumes:
+      - bora-data:/data
+      - ./sources:/sources/logs:ro
+
+volumes:
+  bora-data:

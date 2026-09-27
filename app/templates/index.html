@@ -1,0 +1,212 @@
+<!doctype html>
+<html lang="de">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>BORA Rohdaten-Optimizer</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<header>
+  <h1>BORA Rohdaten-Optimizer</h1>
+  <span class="sub">access.log · server*.log* · AWR — sammeln, kategorisieren, zeitrahmengerecht paketieren</span>
+</header>
+<main>
+
+{% if msg %}<div class="flash {{ level }}">{{ msg }}</div>{% endif %}
+
+<section id="job" class="card job {% if job.running %}running{% elif job.error %}error{% endif %}"
+         data-running="{{ 'true' if job.running else 'false' }}">
+  <strong>Status:</strong> <span id="job-msg">{{ job.message }}</span>
+  {% if job.error %}<div class="err">{{ job.error }}</div>{% endif %}
+  {% if job.result and not job.running %}
+    {% if job.result.zips is defined %}
+      <div class="muted">{{ job.result.zips|length }} Paket(e) erzeugt{% if job.result.hinweis %} – {{ job.result.hinweis }}{% endif %}</div>
+    {% elif job.result is mapping %}
+      <div class="muted">{% for k, v in job.result.items() %}{{ k }}: {{ v }}{% if not loop.last %} · {% endif %}{% endfor %}</div>
+    {% endif %}
+  {% endif %}
+</section>
+
+<div class="grid">
+<section class="card">
+  <h2>1 · Daten sammeln</h2>
+  <form id="upload-form" action="/upload" method="post" enctype="multipart/form-data">
+    <label>Quelle / Host <input name="source" placeholder="z.B. wls-prod-01 (optional)" pattern="[A-Za-z0-9._\-]*"></label>
+    <label>Dateien <input type="file" name="files" multiple required></label>
+    <p class="muted">access.log*, server*.log* (auch rotiert / .gz), Oracle-Reports als HTML/Text (AWR, ASH, ADDM, AWR-Global/Compare, Statspack) oder Archive (.zip auch &gt; 4 GB, .tar.gz) – werden automatisch entpackt.</p>
+    <button type="submit">Hochladen &amp; analysieren</button>
+    <div id="upload-progress" hidden>
+      <progress max="100" value="0"></progress>
+      <span class="small" id="upload-text"></span>
+    </div>
+  </form>
+  <form action="/scan" method="post" class="inline">
+    <button type="submit" class="secondary">Verzeichnisse neu einlesen</button>
+  </form>
+  <p class="muted">Eingelesene Verzeichnisse:
+    {% for label, path in roots.items() %}<code>{{ label }}</code> = {{ path }}{% if not loop.last %}, {% endif %}{% endfor %}
+  </p>
+</section>
+
+<section class="card">
+  <h2>3 · Pakete erstellen</h2>
+  <form action="/build" method="post">
+    <fieldset>
+      <legend>Zeitrahmen-Regel</legend>
+      <label class="radio"><input type="radio" name="mode" value="day" checked>
+        Pro Kalendertag – <code>BORA_JJJJ-MM-TT.zip</code> ({{ plan_day|length }} Pakete)</label>
+      <label class="radio"><input type="radio" name="mode" value="awr">
+        Pro AWR-Snapshot-Intervall – <code>BORA_JJJJ-MM-TT_HHMM-HHMM.zip</code> ({{ plan_awr|length }} Pakete)</label>
+    </fieldset>
+    <div class="row">
+      <label>von <input type="date" name="date_from"></label>
+      <label>bis <input type="date" name="date_to"></label>
+      <label>Puffer (Min., nur AWR) <input type="number" name="margin" value="0" min="0" max="1440"></label>
+    </div>
+    <button type="submit" {% if job.running %}disabled{% endif %}>ZIP-Pakete erzeugen</button>
+  </form>
+  <details>
+    <summary>Vorschau geplanter Pakete</summary>
+    <table class="small">
+      <tr><th>Paket (Tag)</th><th>AWR</th></tr>
+      {% for w in plan_day %}<tr><td>{{ w.name }}.zip</td><td>{{ w.awr|length }}</td></tr>{% else %}<tr><td colspan="2" class="muted">–</td></tr>{% endfor %}
+      <tr><th>Paket (AWR-Intervall)</th><th>AWR</th></tr>
+      {% for w in plan_awr %}<tr><td>{{ w.name }}.zip</td><td>{{ w.awr|length }}</td></tr>{% else %}<tr><td colspan="2" class="muted">keine AWR-Reports</td></tr>{% endfor %}
+    </table>
+  </details>
+</section>
+</div>
+
+<section class="card">
+  <h2>2 · Katalog &amp; Kategorisierung</h2>
+  <div class="chips">
+    {% for c in categories %}<span class="chip cat-{{ c }}">{{ c }}: {{ counts[c] }}</span>{% endfor %}
+  </div>
+  <div class="scroll">
+  <table>
+    <thead><tr><th>Kategorie</th><th>Datei</th><th>Quelle</th><th class="num">Größe</th>
+      <th>von</th><th>bis</th><th>Tage</th><th>Info</th><th></th></tr></thead>
+    <tbody>
+    {% for f in files %}
+      <tr class="{% if f.error %}has-error{% endif %}">
+        <td>
+          <form action="/files/{{ f.id }}/category" method="post" class="inline">
+            <select name="category" class="cat-{{ f.category }}" onchange="this.form.submit()">
+              <option value="auto">auto ({{ f.detected }})</option>
+              {% for c in categories %}<option value="{{ c }}" {% if f.override == c %}selected{% endif %}>{{ c }}</option>{% endfor %}
+            </select>
+          </form>
+        </td>
+        <td class="path">{{ f.rel }}</td>
+        <td>{{ f.root }}</td>
+        <td class="num">{{ f.size|size }}</td>
+        <td class="ts">{{ f.first|dt }}</td>
+        <td class="ts">{{ f.last|dt }}</td>
+        <td>{{ f.days|length }}</td>
+        <td class="small">
+          {% if f.error %}<span class="err">{{ f.error }}</span>
+          {% elif f.category == 'awr' %}{{ f.info.report_type or 'Oracle-Report' }}{% if f.info.begin_snap %} · Snap {{ f.info.begin_snap }}–{{ f.info.end_snap }}{% endif %}{% if f.info.time_source == 'fallback' %} · <span class="err" title="Zeitraum aus Zeitangaben im Report geschätzt">Zeit geschätzt</span>{% endif %}{% if f.info.db_name %} · {{ f.info.db_name }}{% endif %}{% if f.info.instance %}/{{ f.info.instance }}{% endif %}
+          {% elif f.info.lines is defined %}{{ f.info.lines }} Zeilen{% endif %}
+        </td>
+        <td>
+          {% if f.deletable %}
+          <form action="/files/{{ f.id }}/delete" method="post" class="inline" onsubmit="return confirm('Datei löschen?')">
+            <button class="icon" title="löschen">✕</button>
+          </form>
+          {% endif %}
+        </td>
+      </tr>
+    {% else %}
+      <tr><td colspan="9" class="muted">Noch keine Dateien – bitte hochladen oder Quellverzeichnis mounten.</td></tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  </div>
+</section>
+
+<section class="card">
+  <h2>4 · ZIP-Pakete</h2>
+  {% if outputs %}
+  <table>
+    <thead><tr><th>Paket</th><th class="num">Größe</th><th>erstellt</th><th></th></tr></thead>
+    <tbody>
+    {% for o in outputs %}
+      <tr>
+        <td><a href="/download/{{ o.name }}">{{ o.name }}</a></td>
+        <td class="num">{{ o.size|size }}</td>
+        <td class="ts">{{ o.mtime|dt }}</td>
+        <td>
+          <form action="/outputs/{{ o.name }}/delete" method="post" class="inline" onsubmit="return confirm('Paket löschen?')">
+            <button class="icon" title="löschen">✕</button>
+          </form>
+        </td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  <form action="/outputs/delete-all" method="post" class="inline" onsubmit="return confirm('Alle Pakete löschen?')">
+    <button class="secondary">Alle Pakete löschen</button>
+  </form>
+  {% else %}
+  <p class="muted">Noch keine Pakete erzeugt.</p>
+  {% endif %}
+</section>
+
+</main>
+<script>
+// Streaming-Upload: jede Datei als roher Request-Body (PUT) - ohne Multipart,
+// mit Fortschritt; geeignet für Archive > 4 GB.
+(function () {
+  const form = document.getElementById('upload-form');
+  const box = document.getElementById('upload-progress');
+  const bar = box.querySelector('progress');
+  const text = document.getElementById('upload-text');
+  const fmt = n => n >= 1073741824 ? (n / 1073741824).toFixed(2) + ' GB' : (n / 1048576).toFixed(1) + ' MB';
+  function put(file, source, idx, total) {
+    return new Promise((resolve, reject) => {
+      const xhr = new XMLHttpRequest();
+      const q = new URLSearchParams({ name: file.name, source: source });
+      xhr.open('PUT', '/api/upload?' + q.toString());
+      xhr.setRequestHeader('Content-Type', 'application/octet-stream');
+      xhr.upload.onprogress = e => {
+        if (!e.lengthComputable) return;
+        bar.value = Math.floor(e.loaded / e.total * 100);
+        text.textContent = `Datei ${idx}/${total}: ${file.name} – ${fmt(e.loaded)} / ${fmt(e.total)}`;
+      };
+      xhr.onload = () => xhr.status < 300 ? resolve(JSON.parse(xhr.responseText))
+        : reject(new Error(file.name + ': HTTP ' + xhr.status + ' ' + xhr.responseText));
+      xhr.onerror = () => reject(new Error(file.name + ': Netzwerkfehler'));
+      xhr.send(file);
+    });
+  }
+  form.addEventListener('submit', async ev => {
+    ev.preventDefault();
+    const files = [...form.querySelector('input[type=file]').files];
+    const source = form.querySelector('input[name=source]').value
+      || 'upload-' + new Date().toISOString().slice(0, 19).replace(/[-:]/g, '').replace('T', '-');
+    form.querySelector('button').disabled = true;
+    box.hidden = false;
+    try {
+      for (let i = 0; i < files.length; i++) await put(files[i], source, i + 1, files.length);
+      location.href = '/?' + new URLSearchParams({ msg: `${files.length} Datei(en) nach inbox/${source} hochgeladen. Archive werden entpackt, Scan läuft …` });
+    } catch (e) {
+      location.href = '/?' + new URLSearchParams({ msg: e.message, level: 'error' });
+    }
+  });
+})();
+
+(function () {
+  const job = document.getElementById('job');
+  if (job.dataset.running !== 'true') return;
+  const timer = setInterval(async () => {
+    try {
+      const s = await (await fetch('/api/status')).json();
+      document.getElementById('job-msg').textContent = s.message;
+      if (!s.running) { clearInterval(timer); location.href = '/'; }
+    } catch (e) { /* Netzwerkfehler: weiter versuchen */ }
+  }, 1500);
+})();
+</script>
+</body>
+</html>
