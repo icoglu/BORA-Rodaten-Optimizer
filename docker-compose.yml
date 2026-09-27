@@ -1,7 +1,6 @@
 # BORA Rohdaten-Optimizer - Betrieb ausschließlich mit Docker
 #
-#   docker compose up -d                          # starten (Image bauen, falls nicht vorhanden)
-#   docker compose pull && docker compose up -d   # fertiges Image aus der Registry
+#   docker compose up -d                          # bauen und starten → http://localhost:8088
 #   docker compose logs -f                        # Start-Diagnose und Protokoll
 #
 #   Linux-Server, automatisch freier Port (nie 8080/8090):
@@ -20,7 +19,10 @@ x-build-args: &build-args
 
 services:
   bora-optimizer:
-    image: ${BORA_IMAGE:-ghcr.io/icoglu/bora-rodaten-optimizer:latest}
+    # Wird immer lokal gebaut (schnell dank Cache) - kein Registry-Login nötig.
+    # Fertiges Registry-Image stattdessen: siehe README, "docker run ... ghcr.io/..."
+    image: bora-rodaten-optimizer:latest
+    pull_policy: build
     build:
       context: .
       target: runtime

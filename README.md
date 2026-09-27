@@ -71,8 +71,9 @@ docker run -d --name bora-rodaten-optimizer --restart unless-stopped \
 ### Variante B – Docker Compose
 
 ```bash
-docker compose pull            # fertiges Image holen …
-docker compose up -d           # … oder, falls nicht erreichbar, lokal bauen und starten
+git clone -b claude/docker-gui-data-collection-cb62pl https://github.com/icoglu/BORA-Rodaten-Optimizer.git
+cd BORA-Rodaten-Optimizer      # WICHTIG: im Ordner mit docker-compose.yml ausführen
+docker compose up -d           # baut lokal und startet
 docker compose logs -f         # Start-Diagnose und Protokoll
 docker compose down            # stoppen (Daten bleiben im Volume bora-data)
 # GUI: http://localhost:8088
@@ -91,7 +92,7 @@ In GitHub unter *Actions → Docker-Image → letzter Lauf → Artifacts* liegt
 
 ```bash
 docker load -i bora-rodaten-optimizer-image.tar.gz
-docker compose up -d --no-build     # bzw. docker run … wie in Variante A
+docker run …                        # wie in Variante A (Image: ghcr.io/icoglu/bora-rodaten-optimizer:latest)
 ```
 
 ### Automatische Port-Wahl (nur Linux-Server)

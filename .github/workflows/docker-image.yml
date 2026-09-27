@@ -26,9 +26,34 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
+  compose-smoke:
+    name: "docker compose up (${{ matrix.arch }})"
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { arch: amd64, runner: ubuntu-latest }
+          - { arch: arm64, runner: ubuntu-24.04-arm }   # wie Mac mit Apple Silicon
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Exakt der Anwender-Befehl
+        run: docker compose up -d --build
+      - name: Warten auf healthy und GUI prüfen
+        run: |
+          for i in $(seq 1 30); do
+            s=$(docker inspect --format '{{.State.Health.Status}}' bora-rodaten-optimizer)
+            [ "$s" = healthy ] && break; sleep 2
+          done
+          docker compose ps
+          docker compose logs --tail 30
+          test "$s" = healthy
+          curl -fsS http://localhost:8088/ | grep -q "BORA Rohdaten-Optimizer"
+          echo "GUI unter http://localhost:8088/ erreichbar ($(uname -m))"
+
   publish:
     name: Image veröffentlichen
-    needs: test
+    needs: [test, compose-smoke]
     if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     permissions:
