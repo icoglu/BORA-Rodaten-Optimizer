@@ -236,3 +236,30 @@ def test_require_awr_can_be_disabled(tmp_path: Path):
         c.put("/api/upload", params={"name": "access.log"}, content=ACCESS.encode())
         c.app.state.jobs.wait()
         assert [o["name"] for o in c.get("/api/outputs").json()] == ["BORA_2026-09-26.zip", "BORA_2026-09-27.zip"]
+
+
+def test_reset_deletes_everything(tmp_path: Path):
+    data = tmp_path / "data"
+    src = tmp_path / "quelle"
+    src.mkdir()
+    (src / "server9.log").write_text("####<Sep 27, 2026 10:30:00,000 AM CEST> <Info> <x>\n")
+    with TestClient(create_app(Settings(data_dir=data, source_dirs=[src]))) as c:
+        c.app.state.jobs.wait()
+        c.put("/api/upload", params={"name": "access.log", "source": "wls01"}, content=ACCESS.encode())
+        c.put("/api/upload", params={"name": "awrrpt_1_100_101.html", "source": "wls01"}, content=AWR_HTML.encode())
+        c.app.state.jobs.wait()
+        assert c.get("/api/outputs").json() and c.get("/api/files").json()
+
+        c.post("/reset", data={"confirm": ""})              # ohne Bestätigung: nichts passiert
+        c.app.state.jobs.wait()
+        assert c.get("/api/outputs").json()
+
+        c.post("/reset", data={"confirm": "RESET"})
+        c.app.state.jobs.wait()
+        assert c.get("/api/status").json()["result"]["katalog"] == "geleert"
+        assert c.get("/api/outputs").json() == [] and c.get("/api/files").json() == []
+        assert list((data / "inbox").iterdir()) == [] and list((data / "output").iterdir()) == []
+        assert (src / "server9.log").exists()               # eingebundene Quelle unberührt
+        c.post("/scan")
+        c.app.state.jobs.wait()
+        assert [f["rel"] for f in c.get("/api/files").json()] == ["server9.log"]

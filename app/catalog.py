@@ -117,6 +117,12 @@ class Catalog:
         with self._conn() as c:
             c.execute("DELETE FROM files WHERE id=?", (file_id,))
 
+    def clear(self) -> None:
+        """Katalog leeren (inkl. manueller Kategorien)."""
+        with self._conn() as c:
+            c.execute("DELETE FROM files")
+        self.last_changed_days = set()
+
     # ------------------------------------------------------------------ Scan
     def scan(self, roots: dict[str, Path], progress: Callable[..., None] = lambda *_a: None) -> dict:
         """Verzeichnisse rekursiv einlesen; nur neue/geänderte Dateien analysieren."""

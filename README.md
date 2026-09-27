@@ -204,6 +204,14 @@ Upload per Kommandozeile (z. B. direkt vom Server):
 curl -T logs.zip "http://bora-host:8088/api/upload?name=logs.zip&source=wls-prod-01"
 ```
 
+## Zurücksetzen
+
+Der Button **„Alles zurücksetzen und löschen“** (Abschnitt 5 der GUI, mit
+Sicherheitsabfrage) löscht alle hochgeladenen Dateien, alle ZIP-Pakete, den
+Katalog inkl. manueller Kategorien und die Arbeitsdateien. Eingebundene
+Log-Verzeichnisse bleiben unberührt und werden beim nächsten Einlesen wieder
+erfasst. Vollständig inkl. Volume: `docker compose down -v`.
+
 ## Konfiguration
 
 | Variable | Standard | Bedeutung |

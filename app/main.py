@@ -5,6 +5,7 @@ from __future__ import annotations
 import base64
 import re
 import secrets
+import shutil
 import tempfile
 from contextlib import asynccontextmanager
 from datetime import date, datetime, timedelta
@@ -182,7 +183,10 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
     def outputs() -> list[dict]:
         items = []
         for p in sorted(settings.output_dir.glob("*.zip")):
-            st = p.stat()
+            try:
+                st = p.stat()
+            except FileNotFoundError:  # gerade von einem Hintergrund-Job entfernt
+                continue
             items.append({"name": p.name, "size": st.st_size, "mtime": datetime.fromtimestamp(st.st_mtime)})
         return items
 
@@ -357,6 +361,39 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
             p.unlink()
             n += 1
         return back(f"{n} Paket(e) gelöscht")
+
+    # ---------------------------------------------------------- Zurücksetzen
+    def _empty_dir(d: Path) -> int:
+        """Inhalt eines Datenverzeichnisses löschen (nur unterhalb von BORA_DATA_DIR)."""
+        if not _is_within(settings.data_dir, d) or d.resolve() == settings.data_dir.resolve():
+            raise RuntimeError(f"Unzulässiges Verzeichnis: {d}")
+        n = 0
+        for child in d.iterdir():
+            if child.is_dir() and not child.is_symlink():
+                n += sum(1 for p in child.rglob("*") if p.is_file())
+                shutil.rmtree(child)
+            else:
+                child.unlink()
+                n += 1
+        return n
+
+    def reset_job(progress) -> dict:
+        progress("Lösche Pakete …", 10)
+        pakete = _empty_dir(settings.output_dir)
+        progress("Lösche hochgeladene Dateien …", 40)
+        uploads = _empty_dir(settings.inbox_dir)
+        progress("Lösche Arbeitsdateien und Katalog …", 80)
+        _empty_dir(settings.work_dir)
+        catalog.clear()
+        return {"pakete_geloescht": pakete, "uploads_geloescht": uploads, "katalog": "geleert"}
+
+    @app.post("/reset")
+    def reset(confirm: str = Form("")):
+        if confirm != "RESET":
+            return back("Zurücksetzen abgebrochen – Bestätigung fehlt.", "warn")
+        started = jobs.submit_or_queue("Zurücksetzen", reset_job)
+        return back("Alles wird zurückgesetzt …" if started else
+                    "Zurücksetzen wird nach dem laufenden Job ausgeführt.")
 
     # -------------------------------------------------------------------- API
     @app.get("/api/status")
