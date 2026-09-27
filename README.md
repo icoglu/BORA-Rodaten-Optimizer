@@ -219,7 +219,7 @@ curl -T logs.zip "http://bora-host:8088/api/upload?name=logs.zip&source=wls-prod
 
 ## Zurücksetzen
 
-Der Button **„Alles zurücksetzen und löschen“** (Abschnitt 5 der GUI, mit
+Der Button **„Alles zurücksetzen und löschen“** (Abschnitt 4 der GUI, mit
 Sicherheitsabfrage) löscht alle hochgeladenen Dateien, alle ZIP-Pakete, den
 Katalog inkl. manueller Kategorien und die Arbeitsdateien. Eingebundene
 Log-Verzeichnisse bleiben unberührt und werden beim nächsten Einlesen wieder
