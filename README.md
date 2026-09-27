@@ -44,6 +44,11 @@ BORA_2026-09-27.zip
 └── manifest.json                       # Zeitraum, Quellen, Zeilen, Snap-IDs, DB/Instanz
 ```
 
+**Einheitlicher Zeitstempel:** Das ZIP und *alle* Einträge darin – Logs,
+HTML-/Text-Reports, `manifest.json` – tragen denselben Zeitstempel: bei
+Tages-Paketen den Tag (`2026-09-27 00:00`), bei AWR-Paketen den Beginn des
+Snapshot-Intervalls (`2026-09-27 10:00`).
+
 Grundsätze:
 
 * **Rohdaten bleiben Rohdaten** – Log-Zeilen werden byte-genau übernommen, nicht umformatiert.

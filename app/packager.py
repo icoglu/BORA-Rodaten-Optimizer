@@ -39,6 +39,12 @@ class Window:
     start: datetime
     end: datetime  # exklusiv
     awr: list[FileRecord] = field(default_factory=list)
+    # Einheitlicher Zeitstempel für das ZIP und alle Einträge (Tag 00:00 bzw. AWR-Beginn ohne Puffer)
+    stamp: Optional[datetime] = None
+
+    @property
+    def timestamp(self) -> datetime:
+        return self.stamp or self.start
 
     def contains(self, ts: datetime) -> bool:
         return self.start <= ts < self.end
@@ -95,9 +101,10 @@ def plan_windows(records: list[FileRecord], mode: str, prefix: str = "BORA", mar
                 start, stop = begin - margin, end + margin + timedelta(seconds=1)
                 w = windows.get(name)
                 if w is None:
-                    windows[name] = Window(name, start, stop, [a])
+                    windows[name] = Window(name, start, stop, [a], stamp=begin.replace(second=0))
                 else:  # z.B. RAC: mehrere Instanzen im selben Snapshot-Intervall
                     w.start, w.end = min(w.start, start), max(w.end, stop)
+                    w.stamp = min(w.timestamp, begin.replace(second=0))
                     if a not in w.awr:
                         w.awr.append(a)
     return sorted(windows.values(), key=lambda w: (w.start, w.name))
@@ -207,6 +214,20 @@ def build(records: list[FileRecord], windows: list[Window], out_dir: Path, work_
     return results
 
 
+def _zip_time(ts: datetime) -> tuple[int, int, int, int, int, int]:
+    ts = max(ts, datetime(1980, 1, 1))  # ZIP/DOS-Zeit beginnt 1980
+    return (ts.year, ts.month, ts.day, ts.hour, ts.minute, ts.second - ts.second % 2)
+
+
+def _add(zf: zipfile.ZipFile, src: Path, arcname: str, stamp: datetime) -> None:
+    """Datei mit vorgegebenem Zeitstempel ins ZIP streamen (statt Datei-mtime)."""
+    info = zipfile.ZipInfo(arcname, date_time=_zip_time(stamp))
+    info.compress_type = zipfile.ZIP_DEFLATED
+    info.external_attr = 0o644 << 16
+    with open(src, "rb") as fh, zf.open(info, "w", force_zip64=True) as out:
+        shutil.copyfileobj(fh, out, 4 * 1024 * 1024)
+
+
 def _write_zip(w: Window, slices: list[tuple[FileRecord, _Slice]], out_dir: Path, mode: str) -> dict:
     target = out_dir / f"{w.name}.zip"
     part = target.with_suffix(".zip.part")
@@ -214,6 +235,7 @@ def _write_zip(w: Window, slices: list[tuple[FileRecord, _Slice]], out_dir: Path
         "paket": w.name,
         "modus": mode,
         "zeitraum": {"von": w.start.isoformat(), "bis_exklusiv": w.end.isoformat()},
+        "zeitstempel": w.timestamp.isoformat(),
         "erstellt": datetime.now().isoformat(timespec="seconds"),
         "dateien": [],
     }
@@ -230,7 +252,7 @@ def _write_zip(w: Window, slices: list[tuple[FileRecord, _Slice]], out_dir: Path
     with zipfile.ZipFile(part, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=6, allowZip64=True) as zf:
         for a in sorted(w.awr, key=lambda r: (r.first, r.rel)):  # type: ignore[arg-type,return-value]
             arc = unique(entry_name(a, strip_gz=False))
-            zf.write(a.path, arc)
+            _add(zf, a.path, arc, w.timestamp)
             manifest["dateien"].append({
                 "eintrag": arc, "kategorie": detect.AWR, "quelle": f"{a.root}/{a.rel}",
                 "von": a.first.isoformat() if a.first else None,
@@ -238,12 +260,17 @@ def _write_zip(w: Window, slices: list[tuple[FileRecord, _Slice]], out_dir: Path
             })
         for rec, sl in sorted(slices, key=lambda t: (t[0].category, t[0].root, t[0].rel)):
             arc = unique(entry_name(rec))
-            zf.write(sl.path, arc)
+            _add(zf, sl.path, arc, w.timestamp)
             manifest["dateien"].append({
                 "eintrag": arc, "kategorie": rec.category, "quelle": f"{rec.root}/{rec.rel}",
                 "zeilen": sl.lines, "von": sl.first.isoformat() if sl.first else None,
                 "bis": sl.last.isoformat() if sl.last else None,
             })
-        zf.writestr("manifest.json", json.dumps(manifest, indent=2, ensure_ascii=False))
+        minfo = zipfile.ZipInfo("manifest.json", date_time=_zip_time(w.timestamp))
+        minfo.compress_type = zipfile.ZIP_DEFLATED
+        minfo.external_attr = 0o644 << 16
+        zf.writestr(minfo, json.dumps(manifest, indent=2, ensure_ascii=False))
+    stamp = w.timestamp.timestamp()
+    os.utime(part, (stamp, stamp))  # auch das ZIP selbst trägt den Paket-Zeitstempel
     os.replace(part, target)
     return {"zip": target.name, "dateien": len(manifest["dateien"]), "groesse": target.stat().st_size}
