@@ -48,60 +48,77 @@ Grundsätze:
   (streamend, konstanter Speicherbedarf – auch bei mehreren GB).
 * ZIPs werden atomar geschrieben (`.part` → Umbenennung) und nutzen Zip64.
 
-## Start
+## Start – ausschließlich mit Docker
 
-**Empfohlen – Startskript mit Selbstdiagnose:**
+Auf dem Zielsystem wird **nur Docker** benötigt (kein Python, kein Git, keine
+Skripte). Build, Tests, Start-Diagnose und Betrieb laufen im Container.
+
+### Variante A – fertiges Image aus der Registry (ohne Quellcode)
+
+Die GitHub-Actions-Pipeline testet, baut und veröffentlicht das Image nach
+`ghcr.io/icoglu/bora-rodaten-optimizer`:
 
 ```bash
-./start.sh                 # Linux / macOS
-.\start.ps1                # Windows (Docker Desktop)
-# GUI: http://localhost:8088
+docker login ghcr.io          # nur nötig, solange das Paket privat ist (GitHub-Token mit read:packages)
+docker run -d --name bora-rodaten-optimizer --restart unless-stopped \
+  -p 8088:8088 \
+  -v bora-data:/data \
+  -v /pfad/zu/logs:/sources/logs:ro -e BORA_SOURCE_DIRS=/sources/logs \
+  ghcr.io/icoglu/bora-rodaten-optimizer:latest
+# GUI: http://<host>:8088
 ```
 
-Das Skript prüft Docker, Compose und den Port, baut bzw. lädt das Image,
-startet den Container, wartet auf den Health-Check und meldet bei Problemen
-die konkrete Ursache mit Lösung. Alle Ausgaben stehen zusätzlich in
-`diagnose.log`.
-
-| Aufruf | Wirkung |
-|--------|---------|
-| `./start.sh` | starten (Image nur bauen, wenn noch keines vorhanden ist) |
-| `./start.sh --rebuild` | Image neu bauen, z. B. nach einem Update |
-| `./start.sh --stop` | Container stoppen |
-
-### Offline / ohne Build (empfohlen im Firmennetz)
-
-Liegt das fertige Image unter `dist/bora-rodaten-optimizer-image.tar.gz`,
-lädt das Startskript es automatisch (auch in Teilen ausgelieferte Dateien
-`…tar.gz.part1`, `…part2` werden vorher zusammengesetzt). Dafür ist **weder Internet noch Docker Hub
-noch pypi** nötig. Manuell geht es so:
+### Variante B – Docker Compose
 
 ```bash
-docker load -i dist/bora-rodaten-optimizer-image.tar.gz
-docker compose up -d --no-build
+docker compose pull            # fertiges Image holen …
+docker compose up -d           # … oder, falls nicht erreichbar, lokal bauen und starten
+docker compose logs -f         # Start-Diagnose und Protokoll
+docker compose down            # stoppen (Daten bleiben im Volume bora-data)
+```
+
+Einstellungen (Port, Log-Verzeichnis, Passwort, Proxy …) in `.env`,
+Vorlage: `.env.example`.
+
+### Variante C – offline (ohne Registry/Internet)
+
+In GitHub unter *Actions → Docker-Image → letzter Lauf → Artifacts* liegt
+`bora-rodaten-optimizer-image` (`docker save`-Archiv):
+
+```bash
+docker load -i bora-rodaten-optimizer-image.tar.gz
+docker compose up -d --no-build     # bzw. docker run … wie in Variante A
+```
+
+### Start-Diagnose
+
+Beim Start prüft der Container Datenverzeichnis, Speicherplatz,
+eingebundene Log-Verzeichnisse und Zugangsschutz. Das Ergebnis steht in
+`docker logs bora-rodaten-optimizer`, Warnungen zeigt zusätzlich die GUI an,
+und als JSON gibt es sie unter `/api/selfcheck`:
+
+```
+[OK ] Datenverzeichnis: /data beschreibbar
+[OK ] Speicherplatz: 29.1 GB frei auf /data
+[WARN] Quelle /sources/logs: nicht vorhanden
+       -> Verzeichnis mounten, z.B. -v /pfad/zu/logs:/sources/logs:ro
+```
+
+### Tests im Container
+
+```bash
+docker compose --profile test run --rm tests
+# oder: docker build --target test .
 ```
 
 ### Build im Firmennetz
 
 | Symptom im Build | Lösung |
 |------------------|--------|
-| `CERTIFICATE_VERIFY_FAILED` / `x509` | Firmen-Root-Zertifikat als PEM nach `certs/firma.crt`, dann `./start.sh --rebuild` (siehe `certs/README.md`) |
+| `CERTIFICATE_VERIFY_FAILED` / `x509` | Firmen-Root-Zertifikat als PEM nach `certs/firma.crt` (siehe `certs/README.md`) |
 | `pypi.org` nicht erreichbar | in `.env`: `HTTPS_PROXY=…` oder `PIP_INDEX_URL=…` (interner Mirror) |
-| Docker Hub gesperrt, `pull access denied`, `429` | in `.env`: `BASE_IMAGE=registry.firma.de/python:3.12-slim` |
+| Docker Hub gesperrt, `pull access denied`, `429` | in `.env`: `BASE_IMAGE=registry.firma.de/python:3.12-slim` – oder Variante A/C |
 | Port belegt | in `.env`: `BORA_PORT=9088` |
-
-Alle Optionen stehen kommentiert in `.env.example`.
-
-### Manuell
-
-```bash
-docker compose up -d --build
-# oder ohne Compose:
-docker build -t bora-rodaten-optimizer .
-docker run -d -p 8088:8088 -v bora-data:/data \
-  -v /pfad/zu/logs:/sources/logs:ro -e BORA_SOURCE_DIRS=/sources/logs \
-  bora-rodaten-optimizer
-```
 
 ## Daten sammeln
 
@@ -163,9 +180,8 @@ Verzeichnisse im Volume: `inbox/` (Uploads), `output/` (ZIP-Pakete),
 ## Entwicklung
 
 ```bash
-pip install -r requirements-dev.txt
-pytest -q
-BORA_DATA_DIR=./data uvicorn app.main:create_app --factory --reload --port 8088
+docker compose --profile test run --rm tests     # Tests
+docker compose up -d --build                     # nach Code-Änderung neu bauen und starten
 ```
 
 Aufbau: `app/detect.py` (Kategorisierung, Oracle-Report-Parser),

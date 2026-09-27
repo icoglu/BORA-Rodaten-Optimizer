@@ -18,7 +18,7 @@ from fastapi.responses import FileResponse, JSONResponse, RedirectResponse, Resp
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
-from . import archives, detect, packager
+from . import archives, detect, packager, selfcheck
 from .catalog import Catalog
 from .config import Settings
 from .jobs import JobRunner
@@ -55,6 +55,7 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
 
     @asynccontextmanager
     async def lifespan(_app: FastAPI):
+        app.state.selfcheck = selfcheck.report(settings)
         start_scan()  # Katalog beim Start mit dem Dateisystem abgleichen
         yield
 
@@ -140,7 +141,12 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
             "files": files, "counts": counts, "categories": detect.CATEGORIES,
             "outputs": outputs(), "job": jobs.state, "msg": msg, "level": level,
             "plan_day": plan_day, "plan_awr": plan_awr, "roots": roots(),
+            "warnings": [c for c in getattr(app.state, "selfcheck", []) if not c["ok"]],
         })
+
+    @app.get("/api/selfcheck")
+    def api_selfcheck():
+        return selfcheck.run(settings)
 
     @app.get("/healthz")
     def healthz():

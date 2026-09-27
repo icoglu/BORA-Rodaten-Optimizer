@@ -7,6 +7,5 @@ sources/*
 !sources/.gitkeep
 .env
 dist/
-diagnose.log
 certs/*.crt
 certs/*.pem

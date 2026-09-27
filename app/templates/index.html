@@ -13,6 +13,7 @@
 </header>
 <main>
 
+{% for w in warnings %}<div class="flash warn"><strong>{{ w.pruefung }}:</strong> {{ w.detail }} – {{ w.abhilfe }}</div>{% endfor %}
 {% if msg %}<div class="flash {{ level }}">{{ msg }}</div>{% endif %}
 
 <section id="job" class="card job {% if job.running %}running{% elif job.error %}error{% endif %}"

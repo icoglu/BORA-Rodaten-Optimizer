@@ -1,32 +1,53 @@
+# BORA Rohdaten-Optimizer - Betrieb ausschließlich mit Docker
+#
+#   docker compose up -d                          # starten (Image bauen, falls nicht vorhanden)
+#   docker compose pull && docker compose up -d   # fertiges Image aus der Registry
+#   docker compose logs -f                        # Start-Diagnose und Protokoll
+#   docker compose --profile test run --rm tests  # Tests im Container
+#   docker compose down                           # stoppen (Daten bleiben im Volume)
+
+x-build-args: &build-args
+  # Optional aus .env: interne Registry / pip-Mirror / Proxy
+  BASE_IMAGE: ${BASE_IMAGE:-python:3.12-slim}
+  PIP_INDEX_URL: ${PIP_INDEX_URL:-}
+  PIP_TRUSTED_HOST: ${PIP_TRUSTED_HOST:-}
+  HTTP_PROXY: ${HTTP_PROXY:-}
+  HTTPS_PROXY: ${HTTPS_PROXY:-}
+  NO_PROXY: ${NO_PROXY:-}
+
 services:
   bora-optimizer:
+    image: ${BORA_IMAGE:-ghcr.io/icoglu/bora-rodaten-optimizer:latest}
     build:
       context: .
-      args:
-        # Optional aus .env: interne Registry / pip-Mirror / Proxy
-        BASE_IMAGE: ${BASE_IMAGE:-python:3.12-slim}
-        PIP_INDEX_URL: ${PIP_INDEX_URL:-}
-        PIP_TRUSTED_HOST: ${PIP_TRUSTED_HOST:-}
-        HTTP_PROXY: ${HTTP_PROXY:-}
-        HTTPS_PROXY: ${HTTPS_PROXY:-}
-        NO_PROXY: ${NO_PROXY:-}
-    image: bora-rodaten-optimizer:latest
+      target: runtime
+      args: *build-args
     container_name: bora-rodaten-optimizer
     restart: unless-stopped
     ports:
-      # Host-Port über BORA_PORT (Datei .env) änderbar, Standard 8088
+      # Host-Port über BORA_PORT (.env) änderbar, Standard 8088
       - "${BORA_PORT:-8088}:8088"
     environment:
-      TZ: Europe/Berlin
-      BORA_ZIP_PREFIX: BORA
-      # Read-only gemountete Quellverzeichnisse (":"-getrennt), zusätzlich zum Upload
+      TZ: ${TZ:-Europe/Berlin}
+      BORA_ZIP_PREFIX: ${BORA_ZIP_PREFIX:-BORA}
       BORA_SOURCE_DIRS: /sources/logs
+      BORA_MAX_UPLOAD_MB: ${BORA_MAX_UPLOAD_MB:-0}
       # Optionale Basic-Auth - beide Werte setzen, um sie zu aktivieren
       BORA_USER: ${BORA_USER:-}
       BORA_PASSWORD: ${BORA_PASSWORD:-}
     volumes:
       - bora-data:/data
-      - ./sources:/sources/logs:ro
+      # Log-Verzeichnis des Hosts, read-only eingebunden (BORA_LOG_DIR in .env)
+      - ${BORA_LOG_DIR:-./sources}:/sources/logs:ro
+
+  tests:
+    profiles: ["test"]
+    image: bora-rodaten-optimizer:test
+    build:
+      context: .
+      target: test
+      args: *build-args
+    command: ["python", "-m", "pytest", "-q", "-p", "no:cacheprovider"]
 
 volumes:
   bora-data:

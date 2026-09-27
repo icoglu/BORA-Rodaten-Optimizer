@@ -82,3 +82,13 @@ def test_upload_limit(tmp_path: Path):
         r = c.put("/api/upload", params={"name": "x.log"}, content=b"x" * (2 * 1024 * 1024))
         assert r.status_code == 413
         assert not list((tmp_path / "data" / "inbox").rglob("*.part"))
+
+
+def test_selfcheck(tmp_path: Path):
+    with _client(tmp_path / "data") as c:
+        checks = {x["pruefung"]: x for x in c.get("/api/selfcheck").json()}
+        assert checks["Datenverzeichnis"]["ok"]
+    missing = tmp_path / "fehlt"
+    with TestClient(create_app(Settings(data_dir=tmp_path / "d2", source_dirs=[missing]))) as c:
+        checks = {x["pruefung"]: x for x in c.get("/api/selfcheck").json()}
+        assert not checks[f"Quelle {missing}"]["ok"] and "mounten" in checks[f"Quelle {missing}"]["abhilfe"]
