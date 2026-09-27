@@ -3,6 +3,7 @@ zeitrahmengerechten Paketieren von access.log, server*.log* und AWR-Reports."""
 from __future__ import annotations
 
 import base64
+import os
 import re
 import secrets
 import shutil
@@ -104,7 +105,8 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
         windows = [w for w in planned if w.start.date().isoformat() in days]
         built = packager.build(records, windows, settings.output_dir, settings.work_dir, "day",
                                lambda msg, pct=None: progress(f"Tages-Pakete: {msg}", pct),
-                               require_logs=settings.require_logs) if windows else []
+                               require_logs=settings.require_logs,
+                               other_max_bytes=settings.other_max_mb * 1024 * 1024) if windows else []
         # gültig: neu gebaute + unveränderte bestehende (nicht neu geprüfte) Tage
         rebuilt = {f"{w.name}.zip" for w in windows}
         valid = {b["zip"] for b in built} | ({f"{w.name}.zip" for w in planned} - rebuilt)
@@ -135,7 +137,8 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
                 or any(d in days for d in detect.days_between(w.start, w.end - timedelta(seconds=1)))]
         built = packager.build(records, todo, settings.output_dir, settings.work_dir, "awr",
                                lambda msg, pct=None: progress(f"AWR-Pakete: {msg}", pct),
-                               require_logs=settings.require_logs) if todo else []
+                               require_logs=settings.require_logs,
+                               other_max_bytes=settings.other_max_mb * 1024 * 1024) if todo else []
         # gültig: neu gebaute + unveränderte bestehende; neu geprüfte ohne Log-Zeilen -> entfernen
         rechecked = {f"{w.name}.zip" for w in todo}
         valid = {b["zip"] for b in built} | ({f"{w.name}.zip" for w in windows} - rechecked)
@@ -203,6 +206,15 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
         dest.mkdir(parents=True, exist_ok=True)
         return label, dest
 
+    def set_upload_mtime(target: Path, mtime_ms: Optional[float]) -> None:
+        """Original-Änderungszeit (vom Browser: File.lastModified, ms) setzen; unbekannt -> 0,
+        damit die Upload-Zeit nicht fälschlich als Datum der Datei gilt."""
+        ts = mtime_ms / 1000 if mtime_ms and mtime_ms > 0 else 0
+        try:
+            os.utime(target, (ts, ts))
+        except (OSError, OverflowError, ValueError):
+            os.utime(target, (0, 0))
+
     def check_limit(written: int, name: str) -> None:
         if settings.max_upload_mb and written > settings.max_upload_mb * 1024 * 1024:
             raise HTTPException(413, f"{name}: größer als {settings.max_upload_mb} MB")
@@ -247,7 +259,7 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
                 "AWR-Reports": sum(1 for f in files if f.category == detect.AWR and packager.is_awr_report(f)),
                 "weitere Oracle-Reports": sum(1 for f in files if f.category == detect.AWR and not packager.is_awr_report(f)),
                 "Access-Logs": counts[detect.ACCESS], "Server-Logs": counts[detect.SERVER],
-                "nicht erkannt": counts[detect.UNKNOWN],
+                "sonstige Dateien mit Datum": sum(1 for f in files if f.category == detect.UNKNOWN and f.days),
             },
         })
 
@@ -261,7 +273,7 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
 
     # --------------------------------------------------------------- Sammeln
     @app.put("/api/upload")
-    async def upload_stream(request: Request, name: str, source: str = ""):
+    async def upload_stream(request: Request, name: str, source: str = "", mtime: Optional[float] = None):
         """Streaming-Upload: Request-Body wird direkt auf das Volume geschrieben
         (kein Multipart, keine Zwischenkopie) - geeignet für ZIPs > 4 GB."""
         fname = safe_name(name)
@@ -282,6 +294,7 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
             part.unlink(missing_ok=True)
             raise HTTPException(400, f"{fname}: Upload unvollständig ({written} von {expected} Bytes)")
         part.replace(target)
+        set_upload_mtime(target, mtime)
         started = start_scan()
         return {"datei": f"{label}/{fname}", "bytes": written, "scan": "gestartet" if started else "eingereiht"}
 
@@ -306,6 +319,7 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
                 part.unlink(missing_ok=True)
                 raise
             part.replace(target)
+            set_upload_mtime(target, None)
             saved += 1
         start_scan()
         return back(f"{saved} Datei(en) nach inbox/{label} hochgeladen. Archive werden entpackt, Scan läuft …")
@@ -367,7 +381,8 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
             if not windows:
                 return {"zips": [], "hinweis": "Keine passenden Zeitfenster gefunden"}
             zips = packager.build(records, windows, settings.output_dir, settings.work_dir, mode, progress,
-                                  require_logs=settings.require_logs)
+                                  require_logs=settings.require_logs,
+                               other_max_bytes=settings.other_max_mb * 1024 * 1024)
             return {"zips": zips} if zips else {"zips": [], "hinweis": "Keine Log-Zeilen in den AWR-Zeiträumen – kein Paket"}
 
         if not jobs.submit("Paketierung", run):

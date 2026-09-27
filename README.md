@@ -48,6 +48,16 @@ vorliegen), wird kein Paket erzeugt. Kommen passende Logs später dazu,
 entsteht das Paket automatisch; werden sie gelöscht, wird es entfernt.
 Abschaltbar mit `BORA_REQUIRE_LOGS=0`.
 
+**Sonstige Dateien mit passendem Datum.** Alle weiteren Dateien (z. B.
+Thread-Dumps, GC-Logs, CSV-/nmon-/sar-Exporte, Konfigurationen, Bilder) kommen
+vollständig unter `sonstige/` in jedes Paket, dessen Datum passt. Das Datum
+wird ermittelt aus: 1. Zeitstempeln im Inhalt, 2. dem Dateinamen
+(`2026-09-27`, `20260927`, `27.09.2026`), 3. dem Original-Änderungsdatum
+(Browser-Upload überträgt es, ZIP-Einträge behalten es, eingebundene
+Verzeichnisse haben es ohnehin). Ohne erkennbares Datum wird nichts geraten.
+Sonstige Dateien allein erzeugen kein Paket. Ausgenommen: EAR/WAR/JAR/RAR und
+auf `ignore` gesetzte Dateien.
+
 **Keine Redundanzen.** Identische Dateien (gleicher Inhalt, SHA-256 –
 z. B. einzeln und im ZIP hochgeladen) und derselbe Oracle-Report in mehreren
 Formaten (gleiche DB, Instanz, Snap-IDs, z. B. `.html` und `.txt`) kommen nur
@@ -243,6 +253,7 @@ erfasst. Vollständig inkl. Volume: `docker compose down -v`.
 | `BORA_SOURCE_DIRS` | – | zusätzliche Quellverzeichnisse, `:`-getrennt (read-only genügt) |
 | `BORA_ZIP_PREFIX` | `BORA` | Präfix der ZIP-Namen |
 | `BORA_DAY_PACKAGES` | `0` | Zusätzlich Tages-Pakete (ganze Tage) automatisch erzeugen |
+| `BORA_OTHER_MAX_MB` | `0` | Größenlimit für sonstige Dateien im Paket (`0` = unbegrenzt) |
 | `BORA_REQUIRE_LOGS` | `1` | AWR-Report ohne passende Log-Zeilen in der Snap Time → kein Paket |
 | `BORA_REQUIRE_AWR` | `1` | Ohne AWR-Report kein Paket (`0` = auch Tage/Reports ohne AWR paketieren) |
 | `BORA_AWR_MARGIN_MIN` | `0` | Puffer in Minuten um den AWR-Zeitraum bei automatischen AWR-Paketen |

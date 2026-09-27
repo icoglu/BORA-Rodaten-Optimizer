@@ -148,6 +148,48 @@ def parse_oracle_ts(value: str) -> Optional[datetime]:
     return parse_text(f"{m[1]} {hour:02d}:{m[3]}:{m[4] or '00'}")
 
 
+_RX_NAME_DATE = [
+    re.compile(r"(?<!\d)(20\d{2})[-_.]?(0[1-9]|1[0-2])[-_.]?(0[1-9]|[12]\d|3[01])(?!\d)"),   # 2026-09-27, 20260927
+    re.compile(r"(?<!\d)(0[1-9]|[12]\d|3[01])\.(0[1-9]|1[0-2])\.(20\d{2})(?!\d)"),          # 27.09.2026
+]
+
+
+def date_from_name(name: str) -> Optional[datetime]:
+    """Datum im Dateinamen (2026-09-27, 20260927, 2026_09_27, 27.09.2026)."""
+    m = _RX_NAME_DATE[0].search(name)
+    if m:
+        y, mo, d = int(m[1]), int(m[2]), int(m[3])
+    else:
+        m = _RX_NAME_DATE[1].search(name)
+        if not m:
+            return None
+        d, mo, y = int(m[1]), int(m[2]), int(m[3])
+    try:
+        return datetime(y, mo, d)
+    except ValueError:
+        return None
+
+
+# Dateizeiten vor 2000 gelten als unbekannt (Uploads ohne Original-Zeitstempel werden auf 0 gesetzt)
+TRUSTED_MTIME_FROM = datetime(2000, 1, 1).timestamp()
+
+
+def date_from_mtime(path: Path) -> Optional[datetime]:
+    """Änderungsdatum der Datei - nur wenn es als Original-Zeitstempel bekannt ist."""
+    mtime = path.stat().st_mtime
+    if mtime < TRUSTED_MTIME_FROM:
+        return None
+    return datetime.fromtimestamp(mtime).replace(hour=0, minute=0, second=0, microsecond=0)
+
+
+def is_binary(path: Path) -> bool:
+    try:
+        with open_binary(path) as fh:
+            return b"\0" in fh.read(8192)
+    except (OSError, EOFError):
+        return True
+
+
 def file_sha256(path: Path) -> str:
     digest = hashlib.sha256()
     with open_binary(path) as fh:

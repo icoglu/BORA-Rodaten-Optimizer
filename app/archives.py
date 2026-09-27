@@ -5,7 +5,9 @@ mehrere Gigabyte große Pakete ohne Timeouts verarbeitet werden.
 """
 from __future__ import annotations
 
+import os
 import re
+from datetime import datetime
 import shutil
 import tarfile
 import zipfile
@@ -47,6 +49,15 @@ def _check_space(dest: Path, needed: int) -> None:
                            f"frei {free / 2**30:.1f} GB")
 
 
+def _keep_zip_time(target: Path, info: zipfile.ZipInfo) -> None:
+    """Original-Zeitstempel des ZIP-Eintrags übernehmen (TAR erledigt das selbst)."""
+    try:
+        ts = datetime(*info.date_time).timestamp()
+        os.utime(target, (ts, ts))
+    except (ValueError, OSError, OverflowError):
+        pass
+
+
 def _skipped(name: str, skip: tuple[str, ...]) -> bool:
     return name.lower().endswith(skip)
 
@@ -84,6 +95,7 @@ def extract_archive(archive: Path, dest: Path, progress: Progress = lambda *_a: 
                         if since >= 64 * CHUNK:  # alle ~256 MB melden (große Einzeldateien)
                             progress(label, done * 100 / total)
                             since = 0
+                _keep_zip_time(target, info)
             progress(f"Entpacke {archive.name}: fertig", 100)
             return len(members), skipped
     try:

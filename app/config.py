@@ -32,6 +32,8 @@ class Settings:
     day_packages: bool = field(default_factory=lambda: os.environ.get("BORA_DAY_PACKAGES", "0").lower() in ("1", "true", "ja", "yes"))
     # AWR-Report ohne passende Log-Zeilen in der Snap Time -> kein Paket
     require_logs: bool = field(default_factory=lambda: os.environ.get("BORA_REQUIRE_LOGS", "1").lower() not in ("0", "false", "nein", "no"))
+    # Sonstige Dateien mit passendem Datum ins Paket; größere als dieses Limit (MB) auslassen (0 = unbegrenzt)
+    other_max_mb: int = field(default_factory=lambda: int(os.environ.get("BORA_OTHER_MAX_MB", "0")))
     max_upload_mb: int = field(default_factory=lambda: int(os.environ.get("BORA_MAX_UPLOAD_MB", "0")))
     auth_user: str = field(default_factory=lambda: os.environ.get("BORA_USER", ""))
     auth_password: str = field(default_factory=lambda: os.environ.get("BORA_PASSWORD", ""))

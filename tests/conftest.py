@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import gzip
+import os
 from pathlib import Path
 
 import pytest
@@ -60,4 +61,5 @@ def sample_dir(tmp_path: Path) -> Path:
     (d / "awrrpt_1_100_101.html").write_text(AWR_HTML)
     (d / "report_102_103.txt").write_text(AWR_TXT)
     (d / "notizen.txt").write_text("irgendwas\n")
+    os.utime(d / "notizen.txt", (0, 0))  # Datei ohne bekanntes Datum
     return tmp_path / "data"

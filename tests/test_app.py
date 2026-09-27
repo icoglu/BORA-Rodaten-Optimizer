@@ -381,3 +381,69 @@ def test_different_content_is_kept(tmp_path: Path):
         c.app.state.jobs.wait()
         z = zipfile.ZipFile(io.BytesIO(c.get("/download/BORA_2026-09-27_1000-1100.zip").content))
         assert {"access/wls01/access.log", "access/wls02/access.log"} <= set(z.namelist())
+
+
+def test_other_files_with_same_date_are_packed(tmp_path: Path):
+    """Sonstige Dateien (weder Log noch Oracle-Report) mit passendem Datum kommen ganz ins Paket."""
+    threaddump = "2026-09-27 10:31:12\nFull thread dump OpenJDK 64-Bit Server VM:\n\"main\" prio=5\n"
+    with _client(tmp_path / "data") as c:
+        c.app.state.jobs.wait()
+        for name, body in [("access.log", ACCESS), ("awrrpt_1_100_101.html", AWR_HTML),
+                           ("threaddump.txt", threaddump),                      # Datum aus Inhalt
+                           ("gc_20260927.csv", "heap;used\n1;2\n"),             # Datum aus Dateiname
+                           ("nmon_27.09.2026.txt", "AAA,host,x\n"),             # Datum aus Dateiname (dt.)
+                           ("sar_2026-09-26.txt", "Linux 5.4\n"),               # anderer Tag -> nicht
+                           ("notizen.txt", "ohne Datum\n")]:                     # kein Datum -> nicht
+            c.put("/api/upload", params={"name": name, "source": "wls01"}, content=body.encode())
+        c.put("/api/upload", params={"name": "heap_20260927.bin", "source": "wls01"}, content=b"\0\1\2" * 10)
+        c.app.state.jobs.wait()
+        z = zipfile.ZipFile(io.BytesIO(c.get("/download/BORA_2026-09-27_1000-1100.zip").content))
+        other = sorted(n for n in z.namelist() if n.startswith("sonstige/"))
+        assert other == ["sonstige/wls01/gc_20260927.csv", "sonstige/wls01/heap_20260927.bin",
+                         "sonstige/wls01/nmon_27.09.2026.txt", "sonstige/wls01/threaddump.txt"]
+        assert z.read("sonstige/wls01/threaddump.txt").decode() == threaddump      # ganz, unverändert
+        m = {e["eintrag"]: e for e in json.loads(z.read("manifest.json"))["dateien"]}
+        assert m["sonstige/wls01/threaddump.txt"]["datum_aus"] == "inhalt"
+        assert m["sonstige/wls01/gc_20260927.csv"]["datum_aus"] == "dateiname"
+        assert "sonstige Dateien mit Datum" in c.get("/").text
+
+
+def test_other_files_alone_create_no_package(tmp_path: Path):
+    with _client(tmp_path / "data") as c:
+        c.app.state.jobs.wait()
+        c.put("/api/upload", params={"name": "gc_20260927.csv"}, content=b"a;b\n")
+        c.put("/api/upload", params={"name": "awrrpt_1_100_101.html"}, content=AWR_HTML.encode())
+        c.app.state.jobs.wait()
+        assert c.get("/api/outputs").json() == []      # AWR + sonstige Datei, aber kein Log -> kein Paket
+
+
+def test_date_from_name():
+    from datetime import datetime
+    from app.detect import date_from_name
+    assert date_from_name("gc_20260927.log") == datetime(2026, 9, 27)
+    assert date_from_name("dump-2026-09-27_1030.txt") == datetime(2026, 9, 27)
+    assert date_from_name("export_27.09.2026.csv") == datetime(2026, 9, 27)
+    assert date_from_name("server1.log00001") is None and date_from_name("v20261399.txt") is None
+
+
+def test_other_files_by_original_file_time(tmp_path: Path):
+    """Ohne Datum in Inhalt/Name zählt das Original-Änderungsdatum (Browser: lastModified, ZIP-Eintrag)."""
+    from datetime import datetime
+    ms = datetime(2026, 9, 27, 10, 45).timestamp() * 1000
+    bundle = io.BytesIO()
+    with zipfile.ZipFile(bundle, "w") as z:
+        z.writestr(zipfile.ZipInfo("export/konfig.xml", date_time=(2026, 9, 27, 9, 0, 0)), "<cfg/>")
+        z.writestr(zipfile.ZipInfo("export/alt.xml", date_time=(2025, 1, 1, 9, 0, 0)), "<alt/>")
+    with _client(tmp_path / "data") as c:
+        c.app.state.jobs.wait()
+        c.put("/api/upload", params={"name": "access.log", "source": "wls01"}, content=ACCESS.encode())
+        c.put("/api/upload", params={"name": "awrrpt_1_100_101.html", "source": "wls01"}, content=AWR_HTML.encode())
+        c.put("/api/upload", params={"name": "bild.png", "source": "wls01", "mtime": ms}, content=b"\x89PNG\0\0")
+        c.put("/api/upload", params={"name": "unbekannt.dat", "source": "wls01"}, content=b"\0\1")  # ohne mtime
+        c.put("/api/upload", params={"name": "export.zip", "source": "wls01"}, content=bundle.getvalue())
+        c.app.state.jobs.wait()
+        z = zipfile.ZipFile(io.BytesIO(c.get("/download/BORA_2026-09-27_1000-1100.zip").content))
+        other = sorted(n for n in z.namelist() if n.startswith("sonstige/"))
+        assert other == ["sonstige/wls01/bild.png", "sonstige/wls01/export/export/konfig.xml"], other
+        m = {e["eintrag"]: e for e in json.loads(z.read("manifest.json"))["dateien"]}
+        assert m["sonstige/wls01/bild.png"]["datum_aus"] == "dateizeit"

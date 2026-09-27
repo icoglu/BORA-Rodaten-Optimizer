@@ -39,6 +39,8 @@ class Window:
     start: datetime
     end: datetime  # exklusiv
     awr: list[FileRecord] = field(default_factory=list)
+    # sonstige Dateien (weder Log noch Oracle-Report) mit passendem Datum - werden ganz übernommen
+    other: list[FileRecord] = field(default_factory=list)
     # Einheitlicher Zeitstempel für das ZIP und alle Einträge (Tag 00:00 bzw. AWR-Beginn ohne Puffer)
     stamp: Optional[datetime] = None
 
@@ -103,7 +105,7 @@ def deduplicate(records: list[FileRecord]) -> tuple[list[FileRecord], dict[int, 
 
     out: list[FileRecord] = []
     for r in sorted(records, key=_preference):
-        k = key_of(r) if r.category in detect.PACKABLE else None
+        k = key_of(r) if r.category in detect.PACKABLE or r.category == detect.UNKNOWN else None
         if k is None:
             out.append(r)
             continue
@@ -190,6 +192,10 @@ def plan_windows(records: list[FileRecord], mode: str, prefix: str = "BORA", mar
                         w.awr.append(rep)
                 if not hits and not require_awr and wanted(begin, end):  # nur ohne AWR-Pflicht: eigenes Paket
                     add_window(rep, begin, end)
+    others = [r for r in records if r.category == detect.UNKNOWN and r.days]
+    for w in windows.values():
+        wdays = set(detect.days_between(w.start, w.end - timedelta(seconds=1)))
+        w.other = [r for r in others if wdays & set(r.days)]
     return sorted(windows.values(), key=lambda w: (w.start, w.name))
 
 
@@ -271,7 +277,7 @@ def _slice_log(rec: FileRecord, windows: list[Window], by_day: Optional[dict[str
 
 def build(records: list[FileRecord], windows: list[Window], out_dir: Path, work_dir: Path,
           mode: str, progress: Callable[..., None] = lambda *_a: None,
-          require_logs: bool = True) -> list[dict]:
+          require_logs: bool = True, other_max_bytes: int = 0) -> list[dict]:
     """ZIPs erzeugen. ``require_logs``: Zeitfenster ohne passende Log-Zeilen
     (z.B. AWR-Report ohne Logs) erhalten kein Paket."""
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -296,7 +302,7 @@ def build(records: list[FileRecord], windows: list[Window], out_dir: Path, work_
             if not slices and (require_logs or not w.awr):
                 continue  # keine Log-Zeilen im Zeitraum -> kein Paket
             progress(f"Erzeuge {w.name}.zip ({idx + 1}/{len(windows)})", 80 + idx * 20 / max(len(windows), 1))
-            results.append(_write_zip(w, slices, out_dir, mode, dups))
+            results.append(_write_zip(w, slices, out_dir, mode, dups, other_max_bytes))
             shutil.rmtree(tmp / str(idx), ignore_errors=True)
     return results
 
@@ -316,7 +322,7 @@ def _add(zf: zipfile.ZipFile, src: Path, arcname: str, stamp: datetime) -> None:
 
 
 def _write_zip(w: Window, slices: list[tuple[FileRecord, _Slice]], out_dir: Path, mode: str,
-               dups: Optional[dict[int, list[FileRecord]]] = None) -> dict:
+               dups: Optional[dict[int, list[FileRecord]]] = None, other_max_bytes: int = 0) -> dict:
     dups = dups or {}
 
     def dup_info(rec: FileRecord) -> dict:
@@ -360,6 +366,16 @@ def _write_zip(w: Window, slices: list[tuple[FileRecord, _Slice]], out_dir: Path
                 "eintrag": arc, "kategorie": rec.category, "quelle": f"{rec.root}/{rec.rel}",
                 "zeilen": sl.lines, "von": sl.first.isoformat() if sl.first else None,
                 "bis": sl.last.isoformat() if sl.last else None, **dup_info(rec),
+            })
+        for o in sorted(w.other, key=lambda r: (r.root, r.rel)):
+            if other_max_bytes and o.size > other_max_bytes:
+                manifest.setdefault("zu_gross_ausgelassen", []).append(f"{o.root}/{o.rel}")
+                continue
+            arc = unique(entry_name(o, category="sonstige", strip_gz=False))
+            _add(zf, o.path, arc, w.timestamp)
+            manifest["dateien"].append({
+                "eintrag": arc, "kategorie": "sonstige", "quelle": f"{o.root}/{o.rel}",
+                "datum_aus": o.info.get("date_source"), "tage": o.days, **dup_info(o),
             })
         minfo = zipfile.ZipInfo("manifest.json", date_time=_zip_time(w.timestamp))
         minfo.compress_type = zipfile.ZIP_DEFLATED

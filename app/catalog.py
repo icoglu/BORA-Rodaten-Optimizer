@@ -6,7 +6,7 @@ import json
 import sqlite3
 from contextlib import contextmanager
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Callable, Iterator, Optional
 
@@ -14,7 +14,7 @@ from . import detect
 
 # Erhöhen, wenn sich die Analyse ändert - vorhandene Einträge werden dann neu
 # analysiert (manuelle Kategorien bleiben erhalten).
-ANALYSIS_VERSION = "3"
+ANALYSIS_VERSION = "5"
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
@@ -201,6 +201,21 @@ class Catalog:
                     days = sorted({d for b, e in a.periods for d in detect.days_between(b, e)})
                 else:
                     error = "Oracle-Report: Beginn/Ende nicht gefunden"
+            elif category == detect.UNKNOWN:
+                # Sonstige Dateien: Datum aus dem Inhalt, sonst aus dem Dateinamen
+                li = None if detect.is_binary(path) else detect.scan_log(path, file_progress)
+                if li and li.stamped_lines:
+                    first, last, days = li.first, li.last, sorted(li.days)
+                    info = {"sha256": li.sha256, "date_source": "inhalt"}
+                else:
+                    info = {"sha256": li.sha256 if li else detect.file_sha256(path)}
+                    d, src = detect.date_from_name(path.name), "dateiname"
+                    if d is None:
+                        d, src = detect.date_from_mtime(path), "dateizeit"
+                    if d:
+                        first, last = d, d + timedelta(days=1) - timedelta(seconds=1)
+                        days = [d.date().isoformat()]
+                        info["date_source"] = src
             elif category in detect.LOG_CATEGORIES:
                 li = detect.scan_log(path, file_progress)
                 first, last, days = li.first, li.last, sorted(li.days)
