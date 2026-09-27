@@ -61,12 +61,11 @@ Die GitHub-Actions-Pipeline testet, baut und veröffentlicht das Image nach
 ```bash
 docker login ghcr.io          # nur nötig, solange das Paket privat ist (GitHub-Token mit read:packages)
 docker run -d --name bora-rodaten-optimizer --restart unless-stopped \
-  --network host \
+  -p 8088:8088 \
   -v bora-data:/data \
   -v /pfad/zu/logs:/sources/logs:ro -e BORA_SOURCE_DIRS=/sources/logs \
   ghcr.io/icoglu/bora-rodaten-optimizer:latest
-# Gewählten Port anzeigen:  docker logs bora-rodaten-optimizer | grep lauscht
-# GUI: http://<host>:8088   (bzw. der angezeigte Port)
+# GUI: http://localhost:8088   (Mac, Windows, Linux)
 ```
 
 ### Variante B – Docker Compose
@@ -76,7 +75,11 @@ docker compose pull            # fertiges Image holen …
 docker compose up -d           # … oder, falls nicht erreichbar, lokal bauen und starten
 docker compose logs -f         # Start-Diagnose und Protokoll
 docker compose down            # stoppen (Daten bleiben im Volume bora-data)
+# GUI: http://localhost:8088
 ```
+
+Anderer Port (z. B. weil 8088 belegt ist): in `.env` `BORA_PORT=8091` setzen –
+**nicht 8090**, der ist für die BORA-Anwendung reserviert.
 
 Einstellungen (Port, Log-Verzeichnis, Passwort, Proxy …) in `.env`,
 Vorlage: `.env.example`.
@@ -91,12 +94,17 @@ docker load -i bora-rodaten-optimizer-image.tar.gz
 docker compose up -d --no-build     # bzw. docker run … wie in Variante A
 ```
 
-### Port-Wahl
+### Automatische Port-Wahl (nur Linux-Server)
 
-Der Container läuft im Host-Netzwerk und sucht **selbst einen freien Port**:
-ab `BORA_PORT` (8088) aufsteigend, der erste freie wird genommen. Die Ports
-**8080** und **8090 (BORA-Anwendung)** sind reserviert und werden nie
-verwendet, auch wenn sie gerade frei sind (`BORA_PORT_EXCLUDE`).
+Auf Linux kann der Container im Host-Netzwerk laufen und **selbst einen
+freien Port suchen**: ab `BORA_PORT` (8088) aufsteigend, der erste freie wird
+genommen. Die Ports **8080** und **8090 (BORA-Anwendung)** sind reserviert
+und werden nie verwendet, auch wenn sie gerade frei sind (`BORA_PORT_EXCLUDE`).
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.host.yml up -d
+docker compose logs | grep lauscht
+```
 
 ```
 Port 8088 belegt – nächster …
@@ -105,9 +113,9 @@ Port 8090 reserviert – übersprungen
 BORA Rohdaten-Optimizer lauscht auf Port 8091  →  http://<host>:8091
 ```
 
-Den gewählten Port zeigt `docker logs bora-rodaten-optimizer`. Hinweis:
-`--network host` gilt für Linux-Server. Mit Docker Desktop (Windows/Mac)
-stattdessen `-p <freier-port>:8088` verwenden.
+> **Docker Desktop (Mac/Windows) unterstützt das Host-Netzwerk nicht** – der
+> Container wäre dann unter `localhost` nicht erreichbar. Dort immer die
+> Standard-Variante mit Port-Mapping verwenden.
 
 ### Start-Diagnose
 
