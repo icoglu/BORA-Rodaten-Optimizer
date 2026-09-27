@@ -77,3 +77,16 @@ def test_override_to_ignore(sample_dir: Path):
     windows = packager.plan_windows(recs, "day")
     packager.build(recs, windows, sample_dir / "output", sample_dir / "work", "day")
     assert not any(n.startswith("access/") for n in _read(sample_dir / "output" / "BORA_2026-09-27.zip"))
+
+
+def test_catalog_reanalyses_after_version_change(sample_dir: Path):
+    import sqlite3
+    cat = _catalog(sample_dir)
+    access = next(r for r in cat.all() if r.rel.endswith("access.log"))
+    cat.set_override(access.id, "ignore")
+    with sqlite3.connect(sample_dir / "catalog.sqlite3") as c:
+        c.execute("UPDATE meta SET value='0' WHERE key='analysis_version'")
+    cat = Catalog(sample_dir / "catalog.sqlite3")        # Update eingespielt
+    stats = cat.scan({"inbox": sample_dir / "inbox"})
+    assert stats["neu"] == len(cat.all())                # alles neu analysiert
+    assert next(r for r in cat.all() if r.id == access.id).category == "ignore"  # manuelle Wahl bleibt

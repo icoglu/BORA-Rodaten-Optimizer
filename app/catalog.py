@@ -12,7 +12,12 @@ from typing import Callable, Iterator, Optional
 
 from . import detect
 
+# Erhöhen, wenn sich die Analyse ändert - vorhandene Einträge werden dann neu
+# analysiert (manuelle Kategorien bleiben erhalten).
+ANALYSIS_VERSION = "2"
+
 SCHEMA = """
+CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS files (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
     path        TEXT NOT NULL UNIQUE,
@@ -65,6 +70,10 @@ class Catalog:
         self.db_path = db_path
         with self._conn() as c:
             c.executescript(SCHEMA)
+            row = c.execute("SELECT value FROM meta WHERE key='analysis_version'").fetchone()
+            if not row or row[0] != ANALYSIS_VERSION:
+                c.execute("UPDATE files SET mtime=-1")  # erzwingt Neuanalyse beim nächsten Scan
+                c.execute("INSERT OR REPLACE INTO meta(key,value) VALUES('analysis_version',?)", (ANALYSIS_VERSION,))
 
     @contextmanager
     def _conn(self) -> Iterator[sqlite3.Connection]:
@@ -156,9 +165,10 @@ class Catalog:
                 a = detect.parse_awr(path)
                 first, last = a.begin, a.end
                 info = {"report_type": a.report_type, "begin_snap": a.begin_snap, "end_snap": a.end_snap,
-                        "db_name": a.db_name, "instance": a.instance, "time_source": a.time_source}
+                        "db_name": a.db_name, "instance": a.instance, "time_source": a.time_source,
+                        "periods": [[b.isoformat(), e.isoformat()] for b, e in a.periods]}
                 if first and last:
-                    days = detect.days_between(first, last)
+                    days = sorted({d for b, e in a.periods for d in detect.days_between(b, e)})
                 else:
                     error = "Oracle-Report: Beginn/Ende nicht gefunden"
             elif category in detect.LOG_CATEGORIES:
