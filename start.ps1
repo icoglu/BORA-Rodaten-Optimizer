@@ -57,7 +57,13 @@ if ($Rebuild) { $build = $true }
 else {
   docker image inspect $Image *> $null
   if ($LASTEXITCODE -eq 0) { Ok "Image vorhanden: $Image" }
-  elseif (Test-Path $ImageTar) {
+  elseif ((Test-Path $ImageTar) -or (Test-Path "$ImageTar.part*")) {
+    if (-not (Test-Path $ImageTar)) {  # geteilt ausgelieferte Datei zusammensetzen
+      $out = [IO.File]::Create((Join-Path $PSScriptRoot $ImageTar))
+      Get-ChildItem "$ImageTar.part*" | Sort-Object Name | ForEach-Object {
+        $in = [IO.File]::OpenRead($_.FullName); $in.CopyTo($out); $in.Close() }
+      $out.Close(); Ok "Teildateien zusammengesetzt"
+    }
     Write-Host "== Lade fertiges Image aus $ImageTar (kein Build/Internet nötig) ..."
     docker load -i $ImageTar
     if ($LASTEXITCODE -ne 0) { Fail "Image konnte nicht geladen werden." @() }

@@ -69,7 +69,10 @@ if [[ "${1:-}" == "--rebuild" ]]; then
   BUILD_ARGS=(--build)
 elif docker image inspect "$IMAGE" >/dev/null 2>&1; then
   ok "Image vorhanden: $IMAGE"
-elif [[ -f "$IMAGE_TAR" ]]; then
+elif [[ -f "$IMAGE_TAR" ]] || compgen -G "$IMAGE_TAR.part*" >/dev/null; then
+  if [[ ! -f "$IMAGE_TAR" ]]; then  # geteilt ausgelieferte Datei zusammensetzen
+    cat "$IMAGE_TAR".part* > "$IMAGE_TAR" && ok "Teildateien zusammengesetzt"
+  fi
   echo "== Lade fertiges Image aus $IMAGE_TAR (kein Build/Internet nötig) ..."
   docker load -i "$IMAGE_TAR" || fail "Image konnte nicht geladen werden ($IMAGE_TAR defekt?)."
   ok "Image geladen"

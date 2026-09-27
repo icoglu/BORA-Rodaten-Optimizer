@@ -72,7 +72,8 @@ die konkrete Ursache mit Lösung. Alle Ausgaben stehen zusätzlich in
 ### Offline / ohne Build (empfohlen im Firmennetz)
 
 Liegt das fertige Image unter `dist/bora-rodaten-optimizer-image.tar.gz`,
-lädt das Startskript es automatisch. Dafür ist **weder Internet noch Docker Hub
+lädt das Startskript es automatisch (auch in Teilen ausgelieferte Dateien
+`…tar.gz.part1`, `…part2` werden vorher zusammengesetzt). Dafür ist **weder Internet noch Docker Hub
 noch pypi** nötig. Manuell geht es so:
 
 ```bash
