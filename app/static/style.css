@@ -83,3 +83,7 @@ code { font-size: 12px; }
 .danger-zone { border-color: color-mix(in srgb, var(--err) 45%, var(--line)); }
 .danger-zone p { margin: 0 0 12px; }
 button.danger { background: var(--err); color: #fff; }
+.card-head { display: flex; justify-content: space-between; align-items: center; gap: 12px; flex-wrap: wrap; margin-bottom: 12px; }
+.card-head h2 { margin: 0; }
+.card-head form.inline { margin: 0; }
+button.small-btn { padding: 5px 10px; font-size: 13px; }

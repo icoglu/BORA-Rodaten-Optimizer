@@ -115,7 +115,13 @@
 </div>
 
 <section class="card">
-  <h2>2 · Katalog &amp; Kategorisierung</h2>
+  <div class="card-head">
+    <h2>2 · Katalog &amp; Kategorisierung</h2>
+    <form action="/reset" method="post" class="reset-form inline">
+      <input type="hidden" name="confirm" value="">
+      <button type="submit" class="danger small-btn" {% if job.running %}disabled{% endif %}>Alle Dateien löschen (Reset)</button>
+    </form>
+  </div>
   <div class="chips">
     {% for c in categories %}<span class="chip cat-{{ c }}">{{ c }}: {{ counts[c] }}</span>{% endfor %}
   </div>
@@ -194,7 +200,7 @@
   <p>Löscht <strong>alle hochgeladenen Dateien, alle ZIP-Pakete und den Katalog</strong> (inkl. manueller Kategorien).
     Eingebundene Log-Verzeichnisse (<code>logs</code>) bleiben unberührt und werden beim nächsten
     „Verzeichnisse neu einlesen“ wieder erfasst.</p>
-  <form action="/reset" method="post" id="reset-form">
+  <form action="/reset" method="post" class="reset-form">
     <input type="hidden" name="confirm" value="">
     <button type="submit" class="danger" {% if job.running %}disabled{% endif %}>Alles zurücksetzen und löschen</button>
   </form>
@@ -202,11 +208,11 @@
 
 </main>
 <script>
-document.getElementById('reset-form').addEventListener('submit', ev => {
+document.querySelectorAll('.reset-form').forEach(f => f.addEventListener('submit', ev => {
   const ok = confirm('Wirklich ALLES zurücksetzen?\n\nGelöscht werden:\n• alle hochgeladenen Dateien\n• alle ZIP-Pakete\n• der Katalog inkl. Kategorien\n\nDas kann nicht rückgängig gemacht werden.');
   if (!ok) { ev.preventDefault(); return; }
-  ev.target.querySelector('input[name=confirm]').value = 'RESET';
-});
+  f.querySelector('input[name=confirm]').value = 'RESET';
+}));
 
 // Streaming-Upload: jede Datei als roher Request-Body (PUT) - ohne Multipart;
 // Fortschritt als Balkendiagramm (gesamt + je Datei), danach Verarbeitung.
