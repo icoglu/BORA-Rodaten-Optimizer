@@ -76,10 +76,14 @@
       <li><strong>Regel 1 – AWR-Zeitraum:</strong> Für jeden AWR-Report wird der Aufzeichnungszeitraum
         (Begin/End Snap) erkannt; dazu werden die Log-Zeilen dieses Zeitraums und überschneidende
         Oracle-Reports (ASH, ADDM, Statspack) zusammengeführt → <code>BORA_JJJJ-MM-TT_HHMM-HHMM.zip</code></li>
-      <li><strong>Regel 2 – Tag:</strong> alle Dateien pro Tag → <code>BORA_JJJJ-MM-TT.zip</code></li>
+      <li><strong>Regel 2 – Tag:</strong> alle Dateien pro Tag → <code>BORA_JJJJ-MM-TT.zip</code>{% if require_awr %} – nur für Tage mit AWR-Report{% endif %}</li>
+      {% if require_awr %}<li><strong>Ohne AWR-Report kein Paket.</strong></li>{% endif %}
     </ol>
     Nur geänderte Zeiträume/Tage werden neu erstellt.
   </div>
+  {% if require_awr and not has_awr %}
+  <div class="flash warn">Keine AWR-Reports gefunden – es werden keine Pakete erstellt.</div>
+  {% endif %}
   {% endif %}
   <form action="/build" method="post">
     <fieldset>

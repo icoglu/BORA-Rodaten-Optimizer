@@ -29,11 +29,17 @@ werden entfernt (abschaltbar mit `BORA_AUTO_PACKAGE=0`).
 * alle anderen Oracle-Reports (ASH, ADDM, Statspack), deren Zeitraum sich
   mit dem AWR-Zeitraum überschneidet.
 
-→ `BORA_2026-09-27_1000-1100.zip`. Oracle-Reports ohne überschneidenden
-AWR-Zeitraum erhalten ein eigenes Paket – es geht nichts verloren.
+→ `BORA_2026-09-27_1000-1100.zip`.
 
 **Regel 2 – Kalendertag.** Alle Dateien werden anhand der Zeitstempel in
-ihrem Inhalt pro Tag zusammengeführt → `BORA_2026-09-27.zip`.
+ihrem Inhalt pro Tag zusammengeführt → `BORA_2026-09-27.zip` – nur für Tage
+mit AWR-Report.
+
+**Ohne AWR-Report kein Paket.** Liegt kein AWR-Report vor, wird kein Paket
+erzeugt (auch nicht per Button); ASH-/ADDM-/Statspack-Reports ohne
+überschneidenden AWR-Zeitraum und Tage ohne AWR-Report erhalten kein Paket.
+Nicht mehr regelkonforme Pakete werden entfernt. Abschaltbar mit
+`BORA_REQUIRE_AWR=0`.
 
 Manuell (Button) lassen sich beide Varianten zusätzlich mit *von/bis* und
 Puffer neu erstellen.
@@ -208,6 +214,7 @@ curl -T logs.zip "http://bora-host:8088/api/upload?name=logs.zip&source=wls-prod
 | `BORA_DATA_DIR` | `/data` | Volume für Inbox, Katalog, Ausgabe |
 | `BORA_SOURCE_DIRS` | – | zusätzliche Quellverzeichnisse, `:`-getrennt (read-only genügt) |
 | `BORA_ZIP_PREFIX` | `BORA` | Präfix der ZIP-Namen |
+| `BORA_REQUIRE_AWR` | `1` | Ohne AWR-Report kein Paket (`0` = auch Tage/Reports ohne AWR paketieren) |
 | `BORA_AWR_MARGIN_MIN` | `0` | Puffer in Minuten um den AWR-Zeitraum bei automatischen AWR-Paketen |
 | `BORA_AUTO_PACKAGE` | `1` | Tages-Pakete nach jedem Upload/Einlesen automatisch erstellen (`0` = aus) |
 | `BORA_SKIP_EXTRACT` | `.ear,.war,.jar,.rar` | Java-Anwendungsarchive: werden beim Entpacken übersprungen, selbst nie entpackt und als `ignore` eingestuft |

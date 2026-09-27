@@ -96,25 +96,25 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
         """Tages-Pakete der betroffenen Tage neu erstellen; Tage ohne Daten mehr
         -> veraltetes ZIP entfernen. Regel: alle Dateien eines Tages (nach
         Zeitstempel im Inhalt) in genau ein ZIP BORA_JJJJ-MM-TT.zip."""
-        if not settings.auto_package or not days:
+        if not settings.auto_package:
             return {}
         records = catalog.all()
-        windows = [w for w in packager.plan_windows(records, "day", settings.zip_prefix)
-                   if w.start.date().isoformat() in days]
+        planned = packager.plan_windows(records, "day", settings.zip_prefix, require_awr=settings.require_awr)
+        windows = [w for w in planned if w.start.date().isoformat() in days]
         built = packager.build(records, windows, settings.output_dir, settings.work_dir, "day",
                                lambda msg, pct=None: progress(f"Tages-Pakete: {msg}", pct)) if windows else []
-        names = {b["zip"] for b in built}
+        valid = {f"{w.name}.zip" for w in planned}
         removed = 0
-        for d in days:
-            stale = settings.output_dir / f"{settings.zip_prefix}_{d}.zip"
-            if stale.name not in names and stale.exists():
-                stale.unlink()
+        for p in settings.output_dir.glob("*.zip"):   # auch Tage ohne (mehr) AWR-Report entfernen
+            if day_zip.match(p.name) and p.name not in valid:
+                p.unlink()
                 removed += 1
         out = {"tagespakete_aktualisiert": len(built)}
         if removed:
             out["tagespakete_entfernt"] = removed
         return out
 
+    day_zip = re.compile(re.escape(settings.zip_prefix) + r"_\d{4}-\d{2}-\d{2}\.zip$")
     awr_zip = re.compile(re.escape(settings.zip_prefix) + r"_\d{4}-\d{2}-\d{2}_\d{4}-(\d{4}|\d{4}-\d{2}-\d{2}_\d{4})\.zip$")
 
     def repackage_awr(days: set[str], progress) -> dict:
@@ -124,7 +124,8 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
         if not settings.auto_package:
             return {}
         records = catalog.all()
-        windows = packager.plan_windows(records, "awr", settings.zip_prefix, settings.awr_margin_min)
+        windows = packager.plan_windows(records, "awr", settings.zip_prefix, settings.awr_margin_min,
+                                             require_awr=settings.require_awr)
         todo = [w for w in windows
                 if not (settings.output_dir / f"{w.name}.zip").exists()
                 or any(d in days for d in detect.days_between(w.start, w.end - timedelta(seconds=1)))]
@@ -198,14 +199,15 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
         counts = {c: 0 for c in detect.CATEGORIES}
         for f in files:
             counts[f.category] += 1
-        plan_day = packager.plan_windows(files, "day", settings.zip_prefix)
-        plan_awr = packager.plan_windows(files, "awr", settings.zip_prefix)
+        plan_day = packager.plan_windows(files, "day", settings.zip_prefix, require_awr=settings.require_awr)
+        plan_awr = packager.plan_windows(files, "awr", settings.zip_prefix, require_awr=settings.require_awr)
         return templates.TemplateResponse(request, "index.html", {
             "files": files, "counts": counts, "categories": detect.CATEGORIES,
             "outputs": outputs(), "job": jobs.state, "msg": msg, "level": level,
             "plan_day": plan_day, "plan_awr": plan_awr, "roots": roots(),
             "warnings": [c for c in getattr(app.state, "selfcheck", []) if not c["ok"]],
-            "auto_package": settings.auto_package,
+            "auto_package": settings.auto_package, "require_awr": settings.require_awr,
+            "has_awr": any(f.category == detect.AWR and packager.is_awr_report(f) for f in files),
         })
 
     @app.get("/api/selfcheck")
@@ -319,7 +321,8 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
 
         def run(progress):
             records = catalog.all()
-            windows = packager.plan_windows(records, mode, settings.zip_prefix, margin, dfrom, dto)
+            windows = packager.plan_windows(records, mode, settings.zip_prefix, margin, dfrom, dto,
+                                            require_awr=settings.require_awr)
             if not windows:
                 return {"zips": [], "hinweis": "Keine passenden Zeitfenster gefunden"}
             return {"zips": packager.build(records, windows, settings.output_dir,

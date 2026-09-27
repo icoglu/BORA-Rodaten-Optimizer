@@ -21,7 +21,8 @@ def _read(zpath: Path) -> dict[str, bytes]:
 def test_day_mode(sample_dir: Path):
     cat = _catalog(sample_dir)
     recs = cat.all()
-    windows = packager.plan_windows(recs, "day")
+    assert [w.name for w in packager.plan_windows(recs, "day")] == ["BORA_2026-09-27"]  # nur Tage mit AWR
+    windows = packager.plan_windows(recs, "day", require_awr=False)
     assert [w.name for w in windows] == ["BORA_2026-09-26", "BORA_2026-09-27"]
     out = sample_dir / "output"
     res = packager.build(recs, windows, out, sample_dir / "work", "day")

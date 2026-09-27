@@ -77,7 +77,10 @@ def is_awr_report(rec: FileRecord) -> bool:
 
 
 def plan_windows(records: list[FileRecord], mode: str, prefix: str = "BORA", margin_min: int = 0,
-                 date_from: Optional[date] = None, date_to: Optional[date] = None) -> list[Window]:
+                 date_from: Optional[date] = None, date_to: Optional[date] = None,
+                 require_awr: bool = True) -> list[Window]:
+    """Zeitfenster planen. ``require_awr``: ohne AWR-Report kein Paket - Tages-Pakete
+    nur für Tage mit AWR-Report, andere Oracle-Reports nur zusammen mit einem AWR."""
     if mode not in MODES:
         raise ValueError(f"Unbekannter Modus: {mode}")
     usable = [r for r in records if r.category in detect.PACKABLE and r.first and r.last]
@@ -88,6 +91,8 @@ def plan_windows(records: list[FileRecord], mode: str, prefix: str = "BORA", mar
         days: set[str] = set()
         for r in usable:
             days.update(r.days or detect.days_between(r.first, r.last))  # type: ignore[arg-type]
+        if require_awr:
+            days &= {d for a in awrs if is_awr_report(a) for b, e in awr_periods(a) for d in detect.days_between(b, e)}
         for d in sorted(days):
             day = date.fromisoformat(d)
             if not _in_range(day, date_from, date_to):
@@ -130,7 +135,7 @@ def plan_windows(records: list[FileRecord], mode: str, prefix: str = "BORA", mar
                 for w in hits:
                     if rep not in w.awr:
                         w.awr.append(rep)
-                if not hits and wanted(begin, end):  # kein passender AWR-Zeitraum: eigenes Paket
+                if not hits and not require_awr and wanted(begin, end):  # nur ohne AWR-Pflicht: eigenes Paket
                     add_window(rep, begin, end)
     return sorted(windows.values(), key=lambda w: (w.start, w.name))
 

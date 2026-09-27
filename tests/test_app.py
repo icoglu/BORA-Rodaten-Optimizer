@@ -47,7 +47,7 @@ def test_upload_scan_build_download(tmp_path: Path):
         status = c.get("/api/status").json()
         assert status["error"] is None, status
         names = [o["name"] for o in c.get("/api/outputs").json()]
-        assert names == ["BORA_2026-09-26.zip", "BORA_2026-09-27.zip", "BORA_2026-09-27_1000-1100.zip"]
+        assert names == ["BORA_2026-09-27.zip", "BORA_2026-09-27_1000-1100.zip"]  # 26.09.: kein AWR -> kein Paket
         r = c.get("/download/BORA_2026-09-27.zip")
         assert r.status_code == 200 and zipfile.ZipFile(io.BytesIO(r.content)).testzip() is None
         assert c.get("/download/..%2Fcatalog.sqlite3").status_code in (400, 404)
@@ -103,8 +103,8 @@ def test_auto_day_packages(tmp_path: Path):
         c.put("/api/upload", params={"name": "awrrpt_1_100_101.html", "source": "wls01"}, content=AWR_HTML.encode())
         c.app.state.jobs.wait()
         names = [o["name"] for o in c.get("/api/outputs").json()]
-        # ohne Klick: Regel 1 (AWR-Zeitraum) + Regel 2 (Tage)
-        assert names == ["BORA_2026-09-26.zip", "BORA_2026-09-27.zip", "BORA_2026-09-27_1000-1100.zip"]
+        # ohne Klick: Regel 1 (AWR-Zeitraum) + Regel 2 (nur Tage mit AWR-Report)
+        assert names == ["BORA_2026-09-27.zip", "BORA_2026-09-27_1000-1100.zip"]
         z = zipfile.ZipFile(io.BytesIO(c.get("/download/BORA_2026-09-27.zip").content))
         assert {"access/wls01/access.log", "awr/wls01/awrrpt_1_100_101.html"} <= set(z.namelist())
 
@@ -139,8 +139,9 @@ def test_category_change_updates_day_packages(tmp_path: Path):
         assert [o["name"] for o in c.get("/api/outputs").json()] == ["BORA_2026-09-27.zip", "BORA_2026-09-27_1000-1100.zip"]
         c.post(f"/files/{fid}/category", data={"category": "auto"})
         c.app.state.jobs.wait()
-        assert [o["name"] for o in c.get("/api/outputs").json()] == [
-            "BORA_2026-09-26.zip", "BORA_2026-09-27.zip", "BORA_2026-09-27_1000-1100.zip"]
+        assert [o["name"] for o in c.get("/api/outputs").json()] == ["BORA_2026-09-27.zip", "BORA_2026-09-27_1000-1100.zip"]
+        z = zipfile.ZipFile(io.BytesIO(c.get("/download/BORA_2026-09-27.zip").content))
+        assert "access/wls01/access.log" in z.namelist()
 
 
 def test_ear_files_are_not_extracted(tmp_path: Path):
@@ -152,6 +153,7 @@ def test_ear_files_are_not_extracted(tmp_path: Path):
     bundle = io.BytesIO()
     with zipfile.ZipFile(bundle, "w") as z:
         z.writestr("domain/servers/AdminServer/logs/access.log", ACCESS)
+        z.writestr("domain/awr/awrrpt_1_100_101.html", AWR_HTML)
         z.writestr("domain/apps/bora.ear", ear.getvalue())
         z.writestr("domain/lib/treiber.jar", b"PK")
     with _client(data) as c:
@@ -187,7 +189,7 @@ def test_rule_one_awr_period_collects_logs_and_other_reports(tmp_path: Path):
         names = [o["name"] for o in c.get("/api/outputs").json()]
         assert "BORA_2026-09-27_1000-1100.zip" in names                 # AWR 10:00:05-11:00:07
         assert "BORA_2026-09-27_1000-1300.zip" not in names             # ADDM hängt am AWR, kein eigenes Paket
-        assert "BORA_2026-09-27_0930-0945.zip" in names                 # ASH ohne AWR-Überschneidung: eigenes Paket
+        assert "BORA_2026-09-27_0930-0945.zip" not in names             # ASH ohne AWR-Überschneidung: kein Paket
         z = zipfile.ZipFile(io.BytesIO(c.get("/download/BORA_2026-09-27_1000-1100.zip").content))
         n = set(z.namelist())
         assert {"awr/wls01/awrrpt_1_100_101.html", "awr/wls01/addmrpt_1.txt",
@@ -207,5 +209,30 @@ def test_awr_package_removed_when_report_deleted(tmp_path: Path):
         assert "BORA_2026-09-27_1000-1100.zip" in [o["name"] for o in c.get("/api/outputs").json()]
         fid = next(f["id"] for f in c.get("/api/files").json() if f["rel"].endswith(".html"))
         c.post(f"/files/{fid}/delete")
+        c.app.state.jobs.wait()
+        assert c.get("/api/outputs").json() == []  # kein AWR-Report mehr -> kein Paket
+
+
+def test_no_awr_no_package(tmp_path: Path):
+    """Findet sich kein AWR-Report, wird kein Paket erzeugt - weder automatisch noch per Button."""
+    from .conftest import SERVER
+    from .test_oracle_reports import ASH_HTML
+    with _client(tmp_path / "data") as c:
+        c.app.state.jobs.wait()
+        for name, body in [("access.log", ACCESS), ("server1.log", SERVER), ("ashrpt_1.html", ASH_HTML)]:
+            c.put("/api/upload", params={"name": name}, content=body.encode())
+        c.app.state.jobs.wait()
+        assert c.get("/api/outputs").json() == []
+        assert "Keine AWR-Reports gefunden" in c.get("/").text
+        for mode in ("day", "awr"):
+            c.post("/build", data={"mode": mode})
+            c.app.state.jobs.wait()
+            assert c.get("/api/outputs").json() == []
+
+
+def test_require_awr_can_be_disabled(tmp_path: Path):
+    with _client(tmp_path / "data", require_awr=False) as c:
+        c.app.state.jobs.wait()
+        c.put("/api/upload", params={"name": "access.log"}, content=ACCESS.encode())
         c.app.state.jobs.wait()
         assert [o["name"] for o in c.get("/api/outputs").json()] == ["BORA_2026-09-26.zip", "BORA_2026-09-27.zip"]
