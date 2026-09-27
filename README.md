@@ -40,8 +40,10 @@ werden zusätzlich alle Dateien pro Tag zusammengeführt →
 `BORA_2026-09-27.zip` (ganze Tage, nur für Tage mit AWR-Report). Per Button
 jederzeit auch manuell möglich.
 
-**AWR-Report ohne Logs: kein Paket.** Findet sich zum AWR-Report keine
-Log-Zeile in seiner Snap Time (auch wenn Logs aus anderen Zeiträumen
+**AWR-Report ohne Logs: kein Paket.** Ein Paket entsteht nur, wenn zum
+AWR-Report ein `access.log*` **oder** `server*.log*` mit Zeilen in der Snap
+Time vorhanden ist (eines von beiden genügt). Findet sich keine solche
+Log-Zeile (auch wenn Logs aus anderen Zeiträumen
 vorliegen), wird kein Paket erzeugt. Kommen passende Logs später dazu,
 entsteht das Paket automatisch; werden sie gelöscht, wird es entfernt.
 Abschaltbar mit `BORA_REQUIRE_LOGS=0`.

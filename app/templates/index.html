@@ -79,7 +79,7 @@
         Aus den Log-Dateien werden <strong>nur die Zeilen zwischen Begin und End Snap Time</strong> übernommen – nicht die ganzen Dateien.</li>
       {% if day_packages %}<li><strong>Regel 2 – Tag:</strong> alle Dateien pro Tag → <code>BORA_JJJJ-MM-TT.zip</code>{% if require_awr %} – nur für Tage mit AWR-Report{% endif %}</li>{% endif %}
       {% if require_awr %}<li><strong>Ohne AWR-Report kein Paket.</strong></li>{% endif %}
-      {% if require_logs %}<li><strong>AWR-Report ohne passende Log-Zeilen in der Snap Time: kein Paket.</strong></li>{% endif %}
+      {% if require_logs %}<li><strong>Paket nur, wenn zum AWR-Report ein Access- oder Server-Log mit Zeilen in der Snap Time vorhanden ist.</strong></li>{% endif %}
     </ol>
     Nur geänderte Zeiträume/Tage werden neu erstellt.
   </div>

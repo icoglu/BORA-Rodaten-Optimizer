@@ -296,3 +296,18 @@ def test_awr_without_logs_no_package(tmp_path: Path):
         c.put("/api/upload", params={"name": "access.log", "source": "wls01"}, content=ACCESS.encode())
         c.app.state.jobs.wait()
         assert [o["name"] for o in c.get("/api/outputs").json()] == ["BORA_2026-09-27_1000-1100.zip"]
+
+
+def test_access_or_server_log_suffices(tmp_path: Path):
+    """Zum AWR-Report genügt ein Access- ODER ein Server-Log mit Zeilen in der Snap Time."""
+    from .conftest import SERVER
+    for name, body, entry in [("access.log", ACCESS, "access/wls01/access.log"),
+                              ("server1.log", SERVER, "server/wls01/server1.log")]:
+        with _client(tmp_path / name) as c:
+            c.app.state.jobs.wait()
+            c.put("/api/upload", params={"name": "awrrpt_1_100_101.html", "source": "db"}, content=AWR_HTML.encode())
+            c.put("/api/upload", params={"name": name, "source": "wls01"}, content=body.encode())
+            c.app.state.jobs.wait()
+            assert [o["name"] for o in c.get("/api/outputs").json()] == ["BORA_2026-09-27_1000-1100.zip"], name
+            z = zipfile.ZipFile(io.BytesIO(c.get("/download/BORA_2026-09-27_1000-1100.zip").content))
+            assert {entry, "awr/db/awrrpt_1_100_101.html"} <= set(z.namelist())
