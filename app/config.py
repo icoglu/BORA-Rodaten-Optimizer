@@ -1,0 +1,42 @@
+"""Laufzeitkonfiguration (ausschließlich über Umgebungsvariablen)."""
+from __future__ import annotations
+
+import os
+from dataclasses import dataclass, field
+from pathlib import Path
+
+
+def _paths(value: str) -> list[Path]:
+    return [Path(p).resolve() for p in value.split(":") if p.strip()]
+
+
+@dataclass(frozen=True)
+class Settings:
+    data_dir: Path = field(default_factory=lambda: Path(os.environ.get("BORA_DATA_DIR", "/data")).resolve())
+    # Zusätzliche (typischerweise read-only gemountete) Quellverzeichnisse, ":"-getrennt
+    source_dirs: list[Path] = field(default_factory=lambda: _paths(os.environ.get("BORA_SOURCE_DIRS", "")))
+    zip_prefix: str = field(default_factory=lambda: os.environ.get("BORA_ZIP_PREFIX", "BORA"))
+    # 0 = unbegrenzt (Uploads > 4 GB werden gestreamt, ZIPs per Zip64 gelesen)
+    max_upload_mb: int = field(default_factory=lambda: int(os.environ.get("BORA_MAX_UPLOAD_MB", "0")))
+    auth_user: str = field(default_factory=lambda: os.environ.get("BORA_USER", ""))
+    auth_password: str = field(default_factory=lambda: os.environ.get("BORA_PASSWORD", ""))
+
+    @property
+    def inbox_dir(self) -> Path:
+        return self.data_dir / "inbox"
+
+    @property
+    def output_dir(self) -> Path:
+        return self.data_dir / "output"
+
+    @property
+    def work_dir(self) -> Path:
+        return self.data_dir / "work"
+
+    @property
+    def db_path(self) -> Path:
+        return self.data_dir / "catalog.sqlite3"
+
+    def ensure_dirs(self) -> None:
+        for d in (self.inbox_dir, self.output_dir, self.work_dir):
+            d.mkdir(parents=True, exist_ok=True)

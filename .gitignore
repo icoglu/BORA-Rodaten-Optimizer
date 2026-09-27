@@ -1,0 +1,11 @@
+__pycache__/
+*.pyc
+.pytest_cache/
+.venv/
+data/
+sources/*
+!sources/.gitkeep
+.env
+dist/
+certs/*.crt
+certs/*.pem

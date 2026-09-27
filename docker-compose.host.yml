@@ -1,0 +1,15 @@
+# Nur Linux-Server: Host-Netzwerk mit automatischer Wahl eines freien Ports.
+# (Docker Desktop auf Mac/Windows unterstützt das nicht - dort docker-compose.yml allein verwenden.)
+#
+#   docker compose -f docker-compose.yml -f docker-compose.host.yml up -d
+#   docker compose logs | grep lauscht        # gewählten Port anzeigen
+services:
+  bora-optimizer:
+    network_mode: host
+    ports: !reset []
+    environment:
+      # Startport; belegte Ports werden übersprungen
+      BORA_PORT: ${BORA_PORT:-8088}
+      BORA_PORT_SEARCH: ${BORA_PORT_SEARCH:-100}
+      # Nie verwenden, auch wenn frei (8090 = BORA-Anwendung)
+      BORA_PORT_EXCLUDE: ${BORA_PORT_EXCLUDE:-8080,8090}
