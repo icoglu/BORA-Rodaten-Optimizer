@@ -68,6 +68,8 @@ def _dt(v: Optional[str]) -> Optional[datetime]:
 class Catalog:
     def __init__(self, db_path: Path) -> None:
         self.db_path = db_path
+        # Tage, deren Daten sich beim letzten scan()/reanalyse() geändert haben
+        self.last_changed_days: set[str] = set()
         with self._conn() as c:
             c.executescript(SCHEMA)
             row = c.execute("SELECT value FROM meta WHERE key='analysis_version'").fetchone()
@@ -121,8 +123,10 @@ class Catalog:
         seen: set[str] = set()
         stats = {"neu": 0, "unverändert": 0, "entfernt": 0, "fehler": 0}
         with self._conn() as c:
-            rows = c.execute("SELECT path,size,mtime,override FROM files").fetchall()
+            rows = c.execute("SELECT path,size,mtime,override,days FROM files").fetchall()
         known = {r["path"]: (r["size"], r["mtime"]) for r in rows}
+        old_days = {r["path"]: json.loads(r["days"]) for r in rows}
+        changed: set[str] = set()
         overrides = {r["path"]: r["override"] for r in rows}
         candidates = []
         for label, root in roots.items():
@@ -141,22 +145,37 @@ class Catalog:
             file_progress = lambda frac, _n=n, _name=name: progress(_name, (_n + frac) * 100 / len(candidates))
             self._analyse_and_store(label, root, path, st.st_size, st.st_mtime, overrides.get(key),
                                     file_progress)
+            changed.update(old_days.get(key, []))
+            changed.update(self._days_of(key))
             stats["neu"] += 1
         with self._conn() as c:
             for key in set(known) - seen:
                 c.execute("DELETE FROM files WHERE path=?", (key,))
+                changed.update(old_days.get(key, []))
                 stats["entfernt"] += 1
             stats["fehler"] = c.execute("SELECT COUNT(*) FROM files WHERE error IS NOT NULL").fetchone()[0]
+        self.last_changed_days = changed
         return stats
+
+    def _days_of(self, path: str) -> list[str]:
+        with self._conn() as c:
+            r = c.execute("SELECT days FROM files WHERE path=?", (path,)).fetchone()
+        return json.loads(r["days"]) if r else []
+
+    def all_days(self) -> set[str]:
+        """Alle Tage, zu denen paketierbare Daten vorliegen."""
+        return {d for r in self.all() if r.category in detect.PACKABLE for d in r.days}
 
     def reanalyse(self, file_id: int) -> None:
         """Zeitraum neu bestimmen (z.B. nach manueller Kategorie-Änderung)."""
         rec = self.get(file_id)
+        self.last_changed_days = set(rec.days) if rec else set()
         if rec is None or not rec.path.is_file():
             return
         st = rec.path.stat()
         root = Path(str(rec.path)[: -len(rec.rel)])
         self._analyse_and_store(rec.root, root, rec.path, st.st_size, st.st_mtime, rec.override)
+        self.last_changed_days.update(self._days_of(str(rec.path)))
 
     def _analyse_and_store(self, label: str, root: Path, path: Path, size: int, mtime: float,
                            override: Optional[str] = None,

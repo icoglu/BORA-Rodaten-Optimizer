@@ -92,9 +92,38 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
             r[label] = d
         return r
 
+    def repackage_days(days: set[str], progress) -> dict:
+        """Tages-Pakete der betroffenen Tage neu erstellen; Tage ohne Daten mehr
+        -> veraltetes ZIP entfernen. Regel: alle Dateien eines Tages (nach
+        Zeitstempel im Inhalt) in genau ein ZIP BORA_JJJJ-MM-TT.zip."""
+        if not settings.auto_package or not days:
+            return {}
+        records = catalog.all()
+        windows = [w for w in packager.plan_windows(records, "day", settings.zip_prefix)
+                   if w.start.date().isoformat() in days]
+        built = packager.build(records, windows, settings.output_dir, settings.work_dir, "day",
+                               lambda msg, pct=None: progress(f"Tages-Pakete: {msg}", pct)) if windows else []
+        names = {b["zip"] for b in built}
+        removed = 0
+        for d in days:
+            stale = settings.output_dir / f"{settings.zip_prefix}_{d}.zip"
+            if stale.name not in names and stale.exists():
+                stale.unlink()
+                removed += 1
+        out = {"tagespakete_aktualisiert": len(built)}
+        if removed:
+            out["tagespakete_entfernt"] = removed
+        return out
+
+    def missing_day_packages() -> set[str]:
+        return {d for d in catalog.all_days()
+                if not (settings.output_dir / f"{settings.zip_prefix}_{d}.zip").exists()}
+
     def scan_job(progress) -> dict:
         extracted = archives.extract_pending(settings.inbox_dir, progress)
         result = catalog.scan(roots(), progress)
+        if settings.auto_package:
+            result.update(repackage_days(catalog.last_changed_days | missing_day_packages(), progress))
         if extracted["archive"] or extracted["fehler"]:
             result.update({"archive_entpackt": extracted["archive"], "dateien_aus_archiven": extracted["entpackt"]})
         if extracted["fehler"]:
@@ -142,6 +171,7 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
             "outputs": outputs(), "job": jobs.state, "msg": msg, "level": level,
             "plan_day": plan_day, "plan_awr": plan_awr, "roots": roots(),
             "warnings": [c for c in getattr(app.state, "selfcheck", []) if not c["ok"]],
+            "auto_package": settings.auto_package,
         })
 
     @app.get("/api/selfcheck")
@@ -215,18 +245,18 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
         rec = catalog.get(file_id)
         if not rec:
             raise HTTPException(404)
-        if category == "auto":
-            catalog.set_override(file_id, None)
-            jobs.submit("Neuanalyse", lambda _p: catalog.reanalyse(file_id))
-            return back(f"{rec.rel}: automatische Kategorie")
-        if category not in detect.CATEGORIES:
+        if category != "auto" and category not in detect.CATEGORIES:
             raise HTTPException(400, "Unbekannte Kategorie")
-        catalog.set_override(file_id, category)
-        if category in detect.PACKABLE and category != rec.category:
-            # Zeitraum mit dem Parser der neuen Kategorie ermitteln
-            if not jobs.submit("Neuanalyse", lambda _p: catalog.reanalyse(file_id)):
-                return back(f"{rec.rel}: Kategorie → {category}. Bitte nach laufendem Job erneut scannen.", "warn")
-        return back(f"{rec.rel}: Kategorie → {category}")
+        catalog.set_override(file_id, None if category == "auto" else category)
+
+        def job(progress):
+            # Zeitraum mit dem Parser der (neuen) Kategorie ermitteln, betroffene Tage neu paketieren
+            catalog.reanalyse(file_id)
+            return repackage_days(catalog.last_changed_days | set(rec.days), progress)
+
+        jobs.submit_or_queue("Neuanalyse", job)
+        label = "automatische Kategorie" if category == "auto" else f"Kategorie → {category}"
+        return back(f"{rec.rel}: {label}")
 
     @app.post("/files/{file_id}/delete")
     def delete_file(file_id: int):
@@ -237,6 +267,8 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
             raise HTTPException(403, "Nur hochgeladene Dateien (inbox) können gelöscht werden")
         rec.path.unlink(missing_ok=True)
         catalog.remove(file_id)
+        days = set(rec.days)
+        jobs.submit_or_queue("Tages-Pakete", lambda p: repackage_days(days, p))
         return back(f"{rec.rel} gelöscht")
 
     # ------------------------------------------------------------- Paketieren

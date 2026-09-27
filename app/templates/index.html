@@ -69,6 +69,11 @@
 
 <section class="card">
   <h2>3 · Pakete erstellen</h2>
+  {% if auto_package %}
+  <p class="auto-note">✓ <strong>Automatisch:</strong> Nach jedem Upload bzw. Einlesen werden alle Dateien anhand
+    der Zeitstempel in ihrem Inhalt <strong>pro Tag</strong> zu <code>BORA_JJJJ-MM-TT.zip</code> zusammengeführt –
+    nur geänderte Tage werden neu erstellt.</p>
+  {% endif %}
   <form action="/build" method="post">
     <fieldset>
       <legend>Zeitrahmen-Regel</legend>

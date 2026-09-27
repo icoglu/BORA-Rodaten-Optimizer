@@ -26,6 +26,13 @@ und lässt sich pro Datei in der GUI übersteuern.
 
 Optional lässt sich der Zeitraum per *von/bis* einschränken.
 
+**Automatisch pro Tag:** Nach jedem Upload bzw. Einlesen werden alle Dateien
+anhand der Zeitstempel in ihrem Inhalt pro Tag zu `BORA_JJJJ-MM-TT.zip`
+zusammengeführt – ohne Klick. Neu erstellt werden nur die Tage, deren Daten
+sich geändert haben (neue/geänderte/gelöschte Datei, geänderte Kategorie);
+Tage ohne Daten verlieren ihr veraltetes ZIP. Abschalten mit
+`BORA_AUTO_PACKAGE=0`. Die Pakete pro AWR-Intervall bleiben per Button möglich.
+
 ZIP-Aufbau:
 
 ```
@@ -188,6 +195,7 @@ curl -T logs.zip "http://bora-host:8088/api/upload?name=logs.zip&source=wls-prod
 | `BORA_DATA_DIR` | `/data` | Volume für Inbox, Katalog, Ausgabe |
 | `BORA_SOURCE_DIRS` | – | zusätzliche Quellverzeichnisse, `:`-getrennt (read-only genügt) |
 | `BORA_ZIP_PREFIX` | `BORA` | Präfix der ZIP-Namen |
+| `BORA_AUTO_PACKAGE` | `1` | Tages-Pakete nach jedem Upload/Einlesen automatisch erstellen (`0` = aus) |
 | `BORA_MAX_UPLOAD_MB` | `0` | Upload-Limit je Datei, `0` = unbegrenzt |
 | `BORA_USER` / `BORA_PASSWORD` | – | aktiviert HTTP-Basic-Auth (beide setzen; TLS über Reverse-Proxy) |
 | `TZ` | `Europe/Berlin` | Zeitzone des Containers (Anzeige/Dateizeiten) |

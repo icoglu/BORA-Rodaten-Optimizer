@@ -17,6 +17,8 @@ class Settings:
     source_dirs: list[Path] = field(default_factory=lambda: _paths(os.environ.get("BORA_SOURCE_DIRS", "")))
     zip_prefix: str = field(default_factory=lambda: os.environ.get("BORA_ZIP_PREFIX", "BORA"))
     # 0 = unbegrenzt (Uploads > 4 GB werden gestreamt, ZIPs per Zip64 gelesen)
+    # Tages-Pakete nach jedem Upload/Einlesen automatisch erstellen bzw. aktualisieren
+    auto_package: bool = field(default_factory=lambda: os.environ.get("BORA_AUTO_PACKAGE", "1").lower() not in ("0", "false", "nein", "no"))
     max_upload_mb: int = field(default_factory=lambda: int(os.environ.get("BORA_MAX_UPLOAD_MB", "0")))
     auth_user: str = field(default_factory=lambda: os.environ.get("BORA_USER", ""))
     auth_password: str = field(default_factory=lambda: os.environ.get("BORA_PASSWORD", ""))

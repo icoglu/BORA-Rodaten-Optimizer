@@ -92,3 +92,49 @@ def test_selfcheck(tmp_path: Path):
     with TestClient(create_app(Settings(data_dir=tmp_path / "d2", source_dirs=[missing]))) as c:
         checks = {x["pruefung"]: x for x in c.get("/api/selfcheck").json()}
         assert not checks[f"Quelle {missing}"]["ok"] and "mounten" in checks[f"Quelle {missing}"]["abhilfe"]
+
+
+def test_auto_day_packages(tmp_path: Path):
+    """Regel: alle Dateien werden nach Zeitstempel im Inhalt pro Tag automatisch zu einem ZIP zusammengeführt."""
+    data = tmp_path / "data"
+    with _client(data) as c:
+        c.app.state.jobs.wait()
+        c.put("/api/upload", params={"name": "access.log", "source": "wls01"}, content=ACCESS.encode())
+        c.put("/api/upload", params={"name": "awrrpt_1_100_101.html", "source": "wls01"}, content=AWR_HTML.encode())
+        c.app.state.jobs.wait()
+        names = [o["name"] for o in c.get("/api/outputs").json()]
+        assert names == ["BORA_2026-09-26.zip", "BORA_2026-09-27.zip"]  # ohne Klick auf "Pakete erzeugen"
+        z = zipfile.ZipFile(io.BytesIO(c.get("/download/BORA_2026-09-27.zip").content))
+        assert {"access/wls01/access.log", "awr/wls01/awrrpt_1_100_101.html"} <= set(z.namelist())
+
+        # Datei löschen -> betroffene Tage werden aktualisiert, leere Tage entfernt
+        fid = next(f["id"] for f in c.get("/api/files").json() if f["rel"] == "wls01/access.log")
+        c.post(f"/files/{fid}/delete")
+        c.app.state.jobs.wait()
+        names = [o["name"] for o in c.get("/api/outputs").json()]
+        assert names == ["BORA_2026-09-27.zip"]
+        z = zipfile.ZipFile(io.BytesIO(c.get("/download/BORA_2026-09-27.zip").content))
+        assert not any(n.startswith("access/") for n in z.namelist())
+
+
+def test_auto_package_can_be_disabled(tmp_path: Path):
+    with _client(tmp_path / "data", auto_package=False) as c:
+        c.app.state.jobs.wait()
+        c.put("/api/upload", params={"name": "access.log"}, content=ACCESS.encode())
+        c.app.state.jobs.wait()
+        assert c.get("/api/outputs").json() == []
+
+
+def test_category_change_updates_day_packages(tmp_path: Path):
+    with _client(tmp_path / "data") as c:
+        c.app.state.jobs.wait()
+        c.put("/api/upload", params={"name": "access.log", "source": "wls01"}, content=ACCESS.encode())
+        c.put("/api/upload", params={"name": "awrrpt_1_100_101.html", "source": "wls01"}, content=AWR_HTML.encode())
+        c.app.state.jobs.wait()
+        fid = next(f["id"] for f in c.get("/api/files").json() if f["rel"] == "wls01/access.log")
+        c.post(f"/files/{fid}/category", data={"category": "ignore"})
+        c.app.state.jobs.wait()
+        assert [o["name"] for o in c.get("/api/outputs").json()] == ["BORA_2026-09-27.zip"]
+        c.post(f"/files/{fid}/category", data={"category": "auto"})
+        c.app.state.jobs.wait()
+        assert [o["name"] for o in c.get("/api/outputs").json()] == ["BORA_2026-09-26.zip", "BORA_2026-09-27.zip"]
