@@ -120,12 +120,14 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
                 if not (settings.output_dir / f"{settings.zip_prefix}_{d}.zip").exists()}
 
     def scan_job(progress) -> dict:
-        extracted = archives.extract_pending(settings.inbox_dir, progress)
+        extracted = archives.extract_pending(settings.inbox_dir, progress, settings.skip_extract)
         result = catalog.scan(roots(), progress)
         if settings.auto_package:
             result.update(repackage_days(catalog.last_changed_days | missing_day_packages(), progress))
         if extracted["archive"] or extracted["fehler"]:
             result.update({"archive_entpackt": extracted["archive"], "dateien_aus_archiven": extracted["entpackt"]})
+        if extracted["uebersprungen"]:
+            result["nicht_entpackt"] = len(extracted["uebersprungen"])
         if extracted["fehler"]:
             result["archivfehler"] = "; ".join(extracted["fehler"])
         return result

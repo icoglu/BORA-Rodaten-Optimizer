@@ -41,7 +41,7 @@
   <form id="upload-form" action="/upload" method="post" enctype="multipart/form-data">
     <label>Quelle / Host <input name="source" placeholder="z.B. wls-prod-01 (optional)" pattern="[A-Za-z0-9._\-]*"></label>
     <label>Dateien <input type="file" name="files" multiple required></label>
-    <p class="muted">access.log*, server*.log* (auch rotiert / .gz), Oracle-Reports als HTML/Text (AWR, ASH, ADDM, AWR-Global/Compare, Statspack) oder Archive (.zip auch &gt; 4 GB, .tar.gz) – werden automatisch entpackt.</p>
+    <p class="muted">access.log*, server*.log* (auch rotiert / .gz), Oracle-Reports als HTML/Text (AWR, ASH, ADDM, AWR-Global/Compare, Statspack) oder Archive (.zip auch &gt; 4 GB, .tar.gz) – werden automatisch entpackt. <strong>EAR/WAR/JAR/RAR werden nicht entpackt</strong> und ignoriert.</p>
     <button type="submit">Hochladen &amp; analysieren</button>
     <div id="upload-panel" class="progress-panel" hidden aria-live="polite">
       <div class="prow total">

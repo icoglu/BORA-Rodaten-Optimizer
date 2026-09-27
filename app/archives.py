@@ -16,6 +16,9 @@ Progress = Callable[..., None]  # progress(meldung, prozent=None)
 
 ARCHIVE_SUFFIXES = (".zip", ".tar", ".tar.gz", ".tgz")
 BROKEN_SUFFIX = ".defekt"
+# Java-Anwendungsarchive: werden beim Entpacken übersprungen (nicht auf die Platte geschrieben)
+# und selbst nie entpackt - sie enthalten keine Log-/Report-Daten.
+DEFAULT_SKIP = (".ear", ".war", ".jar", ".rar")
 CHUNK = 4 * 1024 * 1024
 _RX_STEM = re.compile(r"\.(zip|tar|tar\.gz|tgz)$", re.I)
 
@@ -44,9 +47,15 @@ def _check_space(dest: Path, needed: int) -> None:
                            f"frei {free / 2**30:.1f} GB")
 
 
-def extract_archive(archive: Path, dest: Path, progress: Progress = lambda *_a: None) -> int:
+def _skipped(name: str, skip: tuple[str, ...]) -> bool:
+    return name.lower().endswith(skip)
+
+
+def extract_archive(archive: Path, dest: Path, progress: Progress = lambda *_a: None,
+                    skip: tuple[str, ...] = DEFAULT_SKIP) -> tuple[int, list[str]]:
     """Archiv nach ``dest`` entpacken. Pfade und Platzbedarf werden *vor* dem
-    ersten geschriebenen Byte geprüft. Liefert die Anzahl entpackter Dateien."""
+    ersten geschriebenen Byte geprüft. Einträge mit Endung aus ``skip``
+    (z.B. .ear) werden übersprungen. Liefert (Anzahl entpackt, übersprungene Namen)."""
     dest.mkdir(parents=True, exist_ok=True)
     if archive.name.lower().endswith(".zip"):
         try:
@@ -54,7 +63,9 @@ def extract_archive(archive: Path, dest: Path, progress: Progress = lambda *_a: 
         except zipfile.BadZipFile as exc:
             raise ArchiveError(f"Kein gültiges ZIP: {exc}") from None
         with zf:
-            members = [i for i in zf.infolist() if not i.is_dir()]
+            files = [i for i in zf.infolist() if not i.is_dir()]
+            skipped = [i.filename for i in files if _skipped(i.filename, skip)]
+            members = [i for i in files if not _skipped(i.filename, skip)]
             _check_members(dest, [i.filename for i in members])
             _check_space(dest, sum(i.file_size for i in members))
             total = sum(i.file_size for i in members) or 1
@@ -74,10 +85,12 @@ def extract_archive(archive: Path, dest: Path, progress: Progress = lambda *_a: 
                             progress(label, done * 100 / total)
                             since = 0
             progress(f"Entpacke {archive.name}: fertig", 100)
-            return len(members)
+            return len(members), skipped
     try:
         with tarfile.open(archive) as tf:
-            members = [m for m in tf.getmembers() if m.isfile()]
+            files = [m for m in tf.getmembers() if m.isfile()]
+            skipped = [m.name for m in files if _skipped(m.name, skip)]
+            members = [m for m in files if not _skipped(m.name, skip)]
             _check_members(dest, [m.name for m in members])
             _check_space(dest, sum(m.size for m in members))
             total = sum(m.size for m in members) or 1
@@ -86,15 +99,16 @@ def extract_archive(archive: Path, dest: Path, progress: Progress = lambda *_a: 
                 progress(f"Entpacke {archive.name}: {n}/{len(members)} {m.name}", done * 100 / total)
                 tf.extract(m, dest, filter="data")
                 done += m.size
-            return len(members)
+            return len(members), skipped
     except tarfile.TarError as exc:
         raise ArchiveError(f"Kein gültiges TAR: {exc}") from None
 
 
-def extract_pending(inbox: Path, progress: Progress = lambda *_a: None) -> dict:
+def extract_pending(inbox: Path, progress: Progress = lambda *_a: None,
+                    skip: tuple[str, ...] = DEFAULT_SKIP) -> dict:
     """Alle Archive in der Inbox entpacken (Zielordner = Archivname ohne Endung)
     und danach löschen. Defekte Archive werden in ``*.defekt`` umbenannt."""
-    stats: dict = {"archive": 0, "entpackt": 0, "fehler": []}
+    stats: dict = {"archive": 0, "entpackt": 0, "uebersprungen": [], "fehler": []}
     for archive in sorted(p for p in inbox.rglob("*") if p.is_file() and is_archive(p)):
         if any(part.startswith(".") for part in archive.relative_to(inbox).parts):
             continue  # laufende Uploads (.*.part) ignorieren
@@ -102,7 +116,9 @@ def extract_pending(inbox: Path, progress: Progress = lambda *_a: None) -> dict:
         if dest.exists() and not dest.is_dir():
             dest = dest.with_name(dest.name + "_entpackt")
         try:
-            stats["entpackt"] += extract_archive(archive, dest, progress)
+            count, skipped = extract_archive(archive, dest, progress, skip)
+            stats["entpackt"] += count
+            stats["uebersprungen"] += [f"{archive.name}:{s}" for s in skipped]
             archive.unlink()
             stats["archive"] += 1
         except (ArchiveError, OSError, EOFError, zipfile.BadZipFile) as exc:

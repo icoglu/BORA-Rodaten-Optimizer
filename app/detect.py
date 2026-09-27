@@ -72,10 +72,15 @@ def oracle_report_type(head: bytes) -> Optional[str]:
     return None
 
 
+JAVA_ARCHIVES = (".ear", ".war", ".jar", ".rar")
+
+
 def classify(path: Path, head: Optional[bytes] = None) -> str:
     """Kategorie aus Inhalt (vorrangig) und Dateinamen ableiten."""
-    head = sniff(path) if head is None else head
     name = logical_name(path.name)
+    if name.lower().endswith(JAVA_ARCHIVES):
+        return IGNORE  # Anwendungsarchive: nicht öffnen, nicht entpacken, nicht paketieren
+    head = sniff(path) if head is None else head
     if oracle_report_type(head):
         return AWR
     if _RX_ACCESS_CONTENT.search(head) or _RX_W3C_CONTENT.search(head):

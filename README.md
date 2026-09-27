@@ -171,6 +171,9 @@ docker compose --profile test run --rm tests
 * Entpacken läuft im Hintergrund-Job (keine HTTP-Timeouts); ZIP64-Archive werden
   unterstützt. Vor dem ersten geschriebenen Byte werden Pfade (Zip-Slip) und
   freier Speicherplatz geprüft. Defekte Archive werden zu `*.defekt` umbenannt.
+* **EAR-, WAR-, JAR- und RAR-Dateien werden nicht entpackt**: Liegen sie in einem
+  hochgeladenen Archiv (z. B. Domain-Export), werden sie gar nicht erst
+  herausgeschrieben; direkt hochgeladene bleiben unverändert und werden ignoriert.
 * Getestet mit einem 4,4-GB-ZIP (18 Mio. Logzeilen): Upload, Entpacken, Analyse
   und Paketierung inkl. 4,4-GB-Eintrag im Ergebnis-ZIP.
 * **Platzbedarf** auf `/data` einplanen: Archiv + entpackter Inhalt während des
@@ -196,6 +199,7 @@ curl -T logs.zip "http://bora-host:8088/api/upload?name=logs.zip&source=wls-prod
 | `BORA_SOURCE_DIRS` | – | zusätzliche Quellverzeichnisse, `:`-getrennt (read-only genügt) |
 | `BORA_ZIP_PREFIX` | `BORA` | Präfix der ZIP-Namen |
 | `BORA_AUTO_PACKAGE` | `1` | Tages-Pakete nach jedem Upload/Einlesen automatisch erstellen (`0` = aus) |
+| `BORA_SKIP_EXTRACT` | `.ear,.war,.jar,.rar` | Java-Anwendungsarchive: werden beim Entpacken übersprungen, selbst nie entpackt und als `ignore` eingestuft |
 | `BORA_MAX_UPLOAD_MB` | `0` | Upload-Limit je Datei, `0` = unbegrenzt |
 | `BORA_USER` / `BORA_PASSWORD` | – | aktiviert HTTP-Basic-Auth (beide setzen; TLS über Reverse-Proxy) |
 | `TZ` | `Europe/Berlin` | Zeitzone des Containers (Anzeige/Dateizeiten) |

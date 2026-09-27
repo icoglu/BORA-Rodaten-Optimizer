@@ -19,6 +19,10 @@ class Settings:
     # 0 = unbegrenzt (Uploads > 4 GB werden gestreamt, ZIPs per Zip64 gelesen)
     # Tages-Pakete nach jedem Upload/Einlesen automatisch erstellen bzw. aktualisieren
     auto_package: bool = field(default_factory=lambda: os.environ.get("BORA_AUTO_PACKAGE", "1").lower() not in ("0", "false", "nein", "no"))
+    # Beim Entpacken hochgeladener Archive überspringen (Java-Anwendungsarchive)
+    skip_extract: tuple = field(default_factory=lambda: tuple(
+        s.strip().lower() if s.strip().startswith(".") else "." + s.strip().lower()
+        for s in os.environ.get("BORA_SKIP_EXTRACT", ".ear,.war,.jar,.rar").split(",") if s.strip()))
     max_upload_mb: int = field(default_factory=lambda: int(os.environ.get("BORA_MAX_UPLOAD_MB", "0")))
     auth_user: str = field(default_factory=lambda: os.environ.get("BORA_USER", ""))
     auth_password: str = field(default_factory=lambda: os.environ.get("BORA_PASSWORD", ""))

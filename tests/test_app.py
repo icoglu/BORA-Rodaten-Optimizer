@@ -138,3 +138,33 @@ def test_category_change_updates_day_packages(tmp_path: Path):
         c.post(f"/files/{fid}/category", data={"category": "auto"})
         c.app.state.jobs.wait()
         assert [o["name"] for o in c.get("/api/outputs").json()] == ["BORA_2026-09-26.zip", "BORA_2026-09-27.zip"]
+
+
+def test_ear_files_are_not_extracted(tmp_path: Path):
+    data = tmp_path / "data"
+    ear = io.BytesIO()
+    with zipfile.ZipFile(ear, "w") as z:           # EAR = ZIP-Format mit Anwendung
+        z.writestr("META-INF/application.xml", "<application/>")
+        z.writestr("app.war", b"PK")
+    bundle = io.BytesIO()
+    with zipfile.ZipFile(bundle, "w") as z:
+        z.writestr("domain/servers/AdminServer/logs/access.log", ACCESS)
+        z.writestr("domain/apps/bora.ear", ear.getvalue())
+        z.writestr("domain/lib/treiber.jar", b"PK")
+    with _client(data) as c:
+        c.app.state.jobs.wait()
+        c.put("/api/upload", params={"name": "export.zip", "source": "wls01"}, content=bundle.getvalue())
+        c.app.state.jobs.wait()
+        assert c.get("/api/status").json()["result"]["nicht_entpackt"] == 2
+        c.put("/api/upload", params={"name": "bora.ear", "source": "direkt"}, content=ear.getvalue())
+        c.app.state.jobs.wait()
+        extracted = data / "inbox" / "wls01" / "export" / "domain"
+        assert (extracted / "servers/AdminServer/logs/access.log").exists()
+        assert not (extracted / "apps/bora.ear").exists() and not (extracted / "lib/treiber.jar").exists()
+        # direkt hochgeladene EAR bleibt unverändert liegen, wird nicht entpackt und ignoriert
+        assert (data / "inbox" / "direkt" / "bora.ear").read_bytes() == ear.getvalue()
+        assert not (data / "inbox" / "direkt" / "bora").exists()
+        cats = {f["rel"]: f["category"] for f in c.get("/api/files").json()}
+        assert cats["direkt/bora.ear"] == "ignore"
+        z = zipfile.ZipFile(io.BytesIO(c.get("/download/BORA_2026-09-27.zip").content))
+        assert not any(n.endswith((".ear", ".jar", ".war")) for n in z.namelist())
