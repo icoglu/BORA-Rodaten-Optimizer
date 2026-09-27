@@ -2,7 +2,7 @@
 #
 #   docker compose up -d                          # starten (Image bauen, falls nicht vorhanden)
 #   docker compose pull && docker compose up -d   # fertiges Image aus der Registry
-#   docker compose logs -f                        # Start-Diagnose und Protokoll
+#   docker compose logs -f                        # gewählter Port, Start-Diagnose, Protokoll
 #   docker compose --profile test run --rm tests  # Tests im Container
 #   docker compose down                           # stoppen (Daten bleiben im Volume)
 
@@ -24,10 +24,14 @@ services:
       args: *build-args
     container_name: bora-rodaten-optimizer
     restart: unless-stopped
-    ports:
-      # Host-Port über BORA_PORT (.env) änderbar, Standard 8088
-      - "${BORA_PORT:-8088}:8088"
+    # Host-Netzwerk: der Container sucht selbst ab BORA_PORT den ersten freien
+    # Port des Servers (8088, 8089, ...). Gewählter Port: docker compose logs
+    network_mode: host
     environment:
+      BORA_PORT: ${BORA_PORT:-8088}
+      BORA_PORT_SEARCH: ${BORA_PORT_SEARCH:-100}
+      # Nie verwenden, auch wenn frei (8090 = BORA-Anwendung)
+      BORA_PORT_EXCLUDE: ${BORA_PORT_EXCLUDE:-8080,8090}
       TZ: ${TZ:-Europe/Berlin}
       BORA_ZIP_PREFIX: ${BORA_ZIP_PREFIX:-BORA}
       BORA_SOURCE_DIRS: /sources/logs

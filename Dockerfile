@@ -50,6 +50,8 @@ LABEL org.opencontainers.image.title="BORA Rohdaten-Optimizer" \
       org.opencontainers.image.source="https://github.com/icoglu/BORA-Rodaten-Optimizer"
 ENV BORA_DATA_DIR=/data \
     BORA_PORT=8088 \
+    BORA_PORT_SEARCH=100 \
+    BORA_PORT_EXCLUDE=8080,8090 \
     TZ=Europe/Berlin
 RUN groupadd --system --gid 10001 bora \
  && useradd --system --uid 10001 --gid bora --home-dir /opt/bora --shell /usr/sbin/nologin bora \
@@ -59,8 +61,9 @@ USER bora
 VOLUME ["/data"]
 EXPOSE 8088
 
-HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
-  CMD python -c "import os,urllib.request,sys; sys.exit(0 if urllib.request.urlopen(f'http://127.0.0.1:{os.environ[\"BORA_PORT\"]}/healthz',timeout=4).status==200 else 1)"
+HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
+  CMD python -c "import urllib.request,sys; p=open('/tmp/bora-port').read().strip(); sys.exit(0 if urllib.request.urlopen(f'http://127.0.0.1:{p}/healthz',timeout=4).status==200 else 1)"
 
-# Port per BORA_PORT änderbar (z.B. bei --network host)
-CMD ["sh", "-c", "exec uvicorn app.main:create_app --factory --host 0.0.0.0 --port \"$BORA_PORT\" --proxy-headers"]
+# Sucht ab BORA_PORT den ersten freien Port (BORA_PORT_SEARCH Versuche, 1 = fester Port).
+# Mit --network host werden so die Ports des Hosts geprüft.
+CMD ["python", "-m", "app.serve"]

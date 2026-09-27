@@ -65,6 +65,6 @@ def report(settings: Settings) -> list[dict]:
         (log.info if c["ok"] else log.warning)(line)
         if c["abhilfe"]:
             log.warning("         -> %s", c["abhilfe"])
-    log.info("GUI: http://<host>:%s  (Container-Port %s)", port, port)
+    log.info("GUI: http://<host>:%s", port)
     log.info("=" * 64)
     return checks

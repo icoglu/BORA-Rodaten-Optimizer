@@ -61,11 +61,12 @@ Die GitHub-Actions-Pipeline testet, baut und veröffentlicht das Image nach
 ```bash
 docker login ghcr.io          # nur nötig, solange das Paket privat ist (GitHub-Token mit read:packages)
 docker run -d --name bora-rodaten-optimizer --restart unless-stopped \
-  -p 8088:8088 \
+  --network host \
   -v bora-data:/data \
   -v /pfad/zu/logs:/sources/logs:ro -e BORA_SOURCE_DIRS=/sources/logs \
   ghcr.io/icoglu/bora-rodaten-optimizer:latest
-# GUI: http://<host>:8088
+# Gewählten Port anzeigen:  docker logs bora-rodaten-optimizer | grep lauscht
+# GUI: http://<host>:8088   (bzw. der angezeigte Port)
 ```
 
 ### Variante B – Docker Compose
@@ -89,6 +90,24 @@ In GitHub unter *Actions → Docker-Image → letzter Lauf → Artifacts* liegt
 docker load -i bora-rodaten-optimizer-image.tar.gz
 docker compose up -d --no-build     # bzw. docker run … wie in Variante A
 ```
+
+### Port-Wahl
+
+Der Container läuft im Host-Netzwerk und sucht **selbst einen freien Port**:
+ab `BORA_PORT` (8088) aufsteigend, der erste freie wird genommen. Die Ports
+**8080** und **8090 (BORA-Anwendung)** sind reserviert und werden nie
+verwendet, auch wenn sie gerade frei sind (`BORA_PORT_EXCLUDE`).
+
+```
+Port 8088 belegt – nächster …
+Port 8089 belegt – nächster …
+Port 8090 reserviert – übersprungen
+BORA Rohdaten-Optimizer lauscht auf Port 8091  →  http://<host>:8091
+```
+
+Den gewählten Port zeigt `docker logs bora-rodaten-optimizer`. Hinweis:
+`--network host` gilt für Linux-Server. Mit Docker Desktop (Windows/Mac)
+stattdessen `-p <freier-port>:8088` verwenden.
 
 ### Start-Diagnose
 
@@ -118,7 +137,7 @@ docker compose --profile test run --rm tests
 | `CERTIFICATE_VERIFY_FAILED` / `x509` | Firmen-Root-Zertifikat als PEM nach `certs/firma.crt` (siehe `certs/README.md`) |
 | `pypi.org` nicht erreichbar | in `.env`: `HTTPS_PROXY=…` oder `PIP_INDEX_URL=…` (interner Mirror) |
 | Docker Hub gesperrt, `pull access denied`, `429` | in `.env`: `BASE_IMAGE=registry.firma.de/python:3.12-slim` – oder Variante A/C |
-| Port belegt | in `.env`: `BORA_PORT=9088` |
+| Port belegt | wird automatisch gelöst – siehe *Port-Wahl* |
 
 ## Daten sammeln
 
@@ -154,7 +173,9 @@ curl -T logs.zip "http://bora-host:8088/api/upload?name=logs.zip&source=wls-prod
 
 | Variable | Standard | Bedeutung |
 |----------|----------|-----------|
-| `BORA_PORT` | `8088` | Port der GUI; in Compose (`.env`) der Host-Port, bei `docker run` der Port im Container |
+| `BORA_PORT` | `8088` | Startport der automatischen Port-Wahl |
+| `BORA_PORT_SEARCH` | `100` | Anzahl zu probierender Ports; `1` = genau `BORA_PORT`, sonst Abbruch |
+| `BORA_PORT_EXCLUDE` | `8080,8090` | Ports, die **nie** verwendet werden (8090 = BORA-Anwendung), z. B. `8080,8090,9000-9010` |
 | `BORA_DATA_DIR` | `/data` | Volume für Inbox, Katalog, Ausgabe |
 | `BORA_SOURCE_DIRS` | – | zusätzliche Quellverzeichnisse, `:`-getrennt (read-only genügt) |
 | `BORA_ZIP_PREFIX` | `BORA` | Präfix der ZIP-Namen |
