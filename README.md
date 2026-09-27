@@ -50,22 +50,52 @@ Grundsätze:
 
 ## Start
 
+**Empfohlen – Startskript mit Selbstdiagnose:**
+
 ```bash
-docker compose up -d --build
+./start.sh                 # Linux / macOS
+.\start.ps1                # Windows (Docker Desktop)
 # GUI: http://localhost:8088
 ```
 
-Ist Port 8088 belegt, einen anderen Host-Port wählen – z. B. in `.env`
-(Vorlage: `.env.example`):
+Das Skript prüft Docker, Compose und den Port, baut bzw. lädt das Image,
+startet den Container, wartet auf den Health-Check und meldet bei Problemen
+die konkrete Ursache mit Lösung. Alle Ausgaben stehen zusätzlich in
+`diagnose.log`.
+
+| Aufruf | Wirkung |
+|--------|---------|
+| `./start.sh` | starten (Image nur bauen, wenn noch keines vorhanden ist) |
+| `./start.sh --rebuild` | Image neu bauen, z. B. nach einem Update |
+| `./start.sh --stop` | Container stoppen |
+
+### Offline / ohne Build (empfohlen im Firmennetz)
+
+Liegt das fertige Image unter `dist/bora-rodaten-optimizer-image.tar.gz`,
+lädt das Startskript es automatisch. Dafür ist **weder Internet noch Docker Hub
+noch pypi** nötig. Manuell geht es so:
 
 ```bash
-echo "BORA_PORT=9090" > .env
-docker compose up -d
+docker load -i dist/bora-rodaten-optimizer-image.tar.gz
+docker compose up -d --no-build
 ```
 
-Oder ohne Compose:
+### Build im Firmennetz
+
+| Symptom im Build | Lösung |
+|------------------|--------|
+| `CERTIFICATE_VERIFY_FAILED` / `x509` | Firmen-Root-Zertifikat als PEM nach `certs/firma.crt`, dann `./start.sh --rebuild` (siehe `certs/README.md`) |
+| `pypi.org` nicht erreichbar | in `.env`: `HTTPS_PROXY=…` oder `PIP_INDEX_URL=…` (interner Mirror) |
+| Docker Hub gesperrt, `pull access denied`, `429` | in `.env`: `BASE_IMAGE=registry.firma.de/python:3.12-slim` |
+| Port belegt | in `.env`: `BORA_PORT=9088` |
+
+Alle Optionen stehen kommentiert in `.env.example`.
+
+### Manuell
 
 ```bash
+docker compose up -d --build
+# oder ohne Compose:
 docker build -t bora-rodaten-optimizer .
 docker run -d -p 8088:8088 -v bora-data:/data \
   -v /pfad/zu/logs:/sources/logs:ro -e BORA_SOURCE_DIRS=/sources/logs \

@@ -3,5 +3,10 @@ __pycache__/
 .pytest_cache/
 .venv/
 data/
-sources/
+sources/*
+!sources/.gitkeep
 .env
+dist/
+diagnose.log
+certs/*.crt
+certs/*.pem

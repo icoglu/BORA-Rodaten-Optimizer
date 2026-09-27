@@ -1,6 +1,15 @@
 services:
   bora-optimizer:
-    build: .
+    build:
+      context: .
+      args:
+        # Optional aus .env: interne Registry / pip-Mirror / Proxy
+        BASE_IMAGE: ${BASE_IMAGE:-python:3.12-slim}
+        PIP_INDEX_URL: ${PIP_INDEX_URL:-}
+        PIP_TRUSTED_HOST: ${PIP_TRUSTED_HOST:-}
+        HTTP_PROXY: ${HTTP_PROXY:-}
+        HTTPS_PROXY: ${HTTPS_PROXY:-}
+        NO_PROXY: ${NO_PROXY:-}
     image: bora-rodaten-optimizer:latest
     container_name: bora-rodaten-optimizer
     restart: unless-stopped

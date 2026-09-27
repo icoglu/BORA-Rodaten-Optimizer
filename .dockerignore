@@ -1,8 +1,13 @@
 .git
 .venv
+.env
 __pycache__
 *.pyc
 .pytest_cache
 tests
 data
 sources
+dist
+*.tar
+*.tar.gz
+diagnose.log
