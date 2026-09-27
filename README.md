@@ -31,9 +31,14 @@ werden entfernt (abschaltbar mit `BORA_AUTO_PACKAGE=0`).
 
 → `BORA_2026-09-27_1000-1100.zip`.
 
-**Regel 2 – Kalendertag.** Alle Dateien werden anhand der Zeitstempel in
-ihrem Inhalt pro Tag zusammengeführt → `BORA_2026-09-27.zip` – nur für Tage
-mit AWR-Report.
+Aus den Log-Dateien werden **nur die Zeilen zwischen Begin und End Snap
+Time** übernommen – nicht die ganzen Dateien (Beispiel: 24-h-Log mit
+86 400 Zeilen → 3 603 Zeilen für einen 1-h-Snapshot).
+
+**Regel 2 – Kalendertag (standardmäßig aus).** Mit `BORA_DAY_PACKAGES=1`
+werden zusätzlich alle Dateien pro Tag zusammengeführt →
+`BORA_2026-09-27.zip` (ganze Tage, nur für Tage mit AWR-Report). Per Button
+jederzeit auch manuell möglich.
 
 **Ohne AWR-Report kein Paket.** Liegt kein AWR-Report vor, wird kein Paket
 erzeugt (auch nicht per Button); ASH-/ADDM-/Statspack-Reports ohne
@@ -222,6 +227,7 @@ erfasst. Vollständig inkl. Volume: `docker compose down -v`.
 | `BORA_DATA_DIR` | `/data` | Volume für Inbox, Katalog, Ausgabe |
 | `BORA_SOURCE_DIRS` | – | zusätzliche Quellverzeichnisse, `:`-getrennt (read-only genügt) |
 | `BORA_ZIP_PREFIX` | `BORA` | Präfix der ZIP-Namen |
+| `BORA_DAY_PACKAGES` | `0` | Zusätzlich Tages-Pakete (ganze Tage) automatisch erzeugen |
 | `BORA_REQUIRE_AWR` | `1` | Ohne AWR-Report kein Paket (`0` = auch Tage/Reports ohne AWR paketieren) |
 | `BORA_AWR_MARGIN_MIN` | `0` | Puffer in Minuten um den AWR-Zeitraum bei automatischen AWR-Paketen |
 | `BORA_AUTO_PACKAGE` | `1` | Tages-Pakete nach jedem Upload/Einlesen automatisch erstellen (`0` = aus) |

@@ -97,7 +97,7 @@ def test_selfcheck(tmp_path: Path):
 def test_auto_day_packages(tmp_path: Path):
     """Regel: alle Dateien werden nach Zeitstempel im Inhalt pro Tag automatisch zu einem ZIP zusammengeführt."""
     data = tmp_path / "data"
-    with _client(data) as c:
+    with _client(data, day_packages=True) as c:
         c.app.state.jobs.wait()
         c.put("/api/upload", params={"name": "access.log", "source": "wls01"}, content=ACCESS.encode())
         c.put("/api/upload", params={"name": "awrrpt_1_100_101.html", "source": "wls01"}, content=AWR_HTML.encode())
@@ -128,7 +128,7 @@ def test_auto_package_can_be_disabled(tmp_path: Path):
 
 
 def test_category_change_updates_day_packages(tmp_path: Path):
-    with _client(tmp_path / "data") as c:
+    with _client(tmp_path / "data", day_packages=True) as c:
         c.app.state.jobs.wait()
         c.put("/api/upload", params={"name": "access.log", "source": "wls01"}, content=ACCESS.encode())
         c.put("/api/upload", params={"name": "awrrpt_1_100_101.html", "source": "wls01"}, content=AWR_HTML.encode())
@@ -171,7 +171,7 @@ def test_ear_files_are_not_extracted(tmp_path: Path):
         assert not (data / "inbox" / "direkt" / "bora").exists()
         cats = {f["rel"]: f["category"] for f in c.get("/api/files").json()}
         assert cats["direkt/bora.ear"] == "ignore"
-        z = zipfile.ZipFile(io.BytesIO(c.get("/download/BORA_2026-09-27.zip").content))
+        z = zipfile.ZipFile(io.BytesIO(c.get("/download/BORA_2026-09-27_1000-1100.zip").content))
         assert not any(n.endswith((".ear", ".jar", ".war")) for n in z.namelist())
 
 
@@ -231,7 +231,7 @@ def test_no_awr_no_package(tmp_path: Path):
 
 
 def test_require_awr_can_be_disabled(tmp_path: Path):
-    with _client(tmp_path / "data", require_awr=False) as c:
+    with _client(tmp_path / "data", require_awr=False, day_packages=True) as c:
         c.app.state.jobs.wait()
         c.put("/api/upload", params={"name": "access.log"}, content=ACCESS.encode())
         c.app.state.jobs.wait()
@@ -263,3 +263,19 @@ def test_reset_deletes_everything(tmp_path: Path):
         c.post("/scan")
         c.app.state.jobs.wait()
         assert [f["rel"] for f in c.get("/api/files").json()] == ["server9.log"]
+
+
+def test_default_only_awr_packages_with_snap_time_lines(tmp_path: Path):
+    """Standard: nur AWR-Pakete; aus den Logs nur die Zeilen zwischen Begin und End Snap Time."""
+    from .conftest import SERVER
+    with _client(tmp_path / "data") as c:
+        c.app.state.jobs.wait()
+        for name, body in [("access.log", ACCESS), ("server1.log", SERVER), ("awrrpt_1_100_101.html", AWR_HTML)]:
+            c.put("/api/upload", params={"name": name, "source": "wls01"}, content=body.encode())
+        c.app.state.jobs.wait()
+        assert [o["name"] for o in c.get("/api/outputs").json()] == ["BORA_2026-09-27_1000-1100.zip"]  # kein Tages-Paket
+        z = zipfile.ZipFile(io.BytesIO(c.get("/download/BORA_2026-09-27_1000-1100.zip").content))
+        access, server = z.read("access/wls01/access.log"), z.read("server/wls01/server1.log")
+        assert len(access) < len(ACCESS) and len(server) < len(SERVER)                      # nicht die ganzen Dateien
+        assert access == b'10.0.0.3 - - [27/Sep/2026:10:15:00 +0200] "GET /bora/list HTTP/1.1" 200 2048\n'
+        assert b"10:05:00" in server and b"10:20:00" in server and b"1:05:00,000 PM" not in server

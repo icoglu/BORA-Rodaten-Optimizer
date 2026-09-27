@@ -144,9 +144,10 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
         return out
 
     def repackage(days: set[str], progress) -> dict:
-        """Regel 1: AWR-Zeiträume, Regel 2: Tage."""
+        """Regel 1: AWR-Zeiträume (nur Log-Zeilen der Snap Time); Regel 2: Tage - nur wenn aktiviert."""
         out = repackage_awr(days, progress)
-        out.update(repackage_days(days, progress))
+        if settings.day_packages:
+            out.update(repackage_days(days, progress))
         return out
 
     def missing_day_packages() -> set[str]:
@@ -157,7 +158,8 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
         extracted = archives.extract_pending(settings.inbox_dir, progress, settings.skip_extract)
         result = catalog.scan(roots(), progress)
         if settings.auto_package:
-            result.update(repackage(catalog.last_changed_days | missing_day_packages(), progress))
+            extra = missing_day_packages() if settings.day_packages else set()
+            result.update(repackage(catalog.last_changed_days | extra, progress))
         if extracted["archive"] or extracted["fehler"]:
             result.update({"archive_entpackt": extracted["archive"], "dateien_aus_archiven": extracted["entpackt"]})
         if extracted["uebersprungen"]:
@@ -211,6 +213,7 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
             "plan_day": plan_day, "plan_awr": plan_awr, "roots": roots(),
             "warnings": [c for c in getattr(app.state, "selfcheck", []) if not c["ok"]],
             "auto_package": settings.auto_package, "require_awr": settings.require_awr,
+            "day_packages": settings.day_packages,
             "has_awr": any(f.category == detect.AWR and packager.is_awr_report(f) for f in files),
         })
 
