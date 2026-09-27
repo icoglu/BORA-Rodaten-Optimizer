@@ -108,7 +108,7 @@
         <td class="small">
           {% if f.error %}<span class="err">{{ f.error }}</span>
           {% elif f.category == 'awr' %}{{ f.info.report_type or 'Oracle-Report' }}{% if f.info.begin_snap %} · Snap {{ f.info.begin_snap }}–{{ f.info.end_snap }}{% endif %}{% if f.info.time_source == 'fallback' %} · <span class="err" title="Zeitraum aus Zeitangaben im Report geschätzt">Zeit geschätzt</span>{% endif %}{% if f.info.db_name %} · {{ f.info.db_name }}{% endif %}{% if f.info.instance %}/{{ f.info.instance }}{% endif %}
-          {% elif f.info.lines is defined %}{{ f.info.lines }} Zeilen{% endif %}
+          {% elif f.info.lines is defined %}{{ f.info.lines }} Zeile{{ "n" if f.info.lines != 1 }}{% endif %}
         </td>
         <td>
           {% if f.deletable %}

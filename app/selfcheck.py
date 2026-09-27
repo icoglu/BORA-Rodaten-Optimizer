@@ -46,7 +46,8 @@ def run(settings: Settings) -> list[dict]:
         elif not os.access(d, os.R_OK | os.X_OK):
             add(f"Quelle {d}", False, "nicht lesbar", "Leserechte für UID 10001 (bzw. 'other') vergeben")
         else:
-            n = sum(1 for p in Path(d).rglob("*") if p.is_file())
+            n = sum(1 for p in Path(d).rglob("*")
+                    if p.is_file() and not any(x.startswith(".") for x in p.relative_to(d).parts))
             add(f"Quelle {d}", True, f"{n} Datei(en)")
 
     # Zugangsschutz

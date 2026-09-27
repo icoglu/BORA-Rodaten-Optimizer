@@ -103,6 +103,8 @@ class AwrInfo:
     instance: Optional[str] = None
     report_type: Optional[str] = None
     time_source: Optional[str] = None
+    # Einzelne Analysezeiträume; bei AWR-Compare zwei getrennte Perioden
+    periods: list[tuple[datetime, datetime]] = field(default_factory=list)
 
 
 _RX_TAGS = re.compile(r"<[^>]+>")
@@ -112,6 +114,10 @@ _RX_ASH = re.compile(r"Analysis (Begin|End) Time:\s+(\S+\s+\d{1,2}:\d{2}:\d{2})"
 _ORA_TS = r"\d{1,2}-[A-Za-z]{3}-\d{2,4}\s+\d{1,2}[:.]\d{2}(?:[:.]\d{2})?(?:\s*[AP]M)?"
 _RX_ADDM = re.compile(r"Time period starts at\s+(" + _ORA_TS + r").*?Time period ends at\s+(" + _ORA_TS + ")", re.S | re.I)
 _RX_ORA_TS = re.compile(_ORA_TS, re.I)
+# AWR-Compare: Zeilen "1st"/"2nd" mit Begin Snap Id/Time und End Snap Id/Time
+_RX_COMPARE_ROW = re.compile(
+    r"\b(1st|2nd)\)?\s+(?:[A-Za-z_][\w$#]*\s+)?(\d+)\s+(" + _ORA_TS + r")(?:\s*\(\w{2,3}\))?\s+(\d+)\s+(" + _ORA_TS + ")",
+    re.I)
 _RX_DBNAME = re.compile(r"DB Name\s+DB Id.*?\n\s*(?:[-\s]+\n\s*)?(\S+)\s+(\d+)\s+(\S+)", re.S)
 
 
@@ -152,6 +158,18 @@ def parse_awr(path: Path) -> AwrInfo:
             info.end, info.end_snap = parsed, int(snap)
     if info.begin and info.end:
         info.time_source = "snapshot"
+    # 1b) AWR-Compare: zwei getrennte Perioden statt einer Gesamtspanne
+    if info.report_type == "AWR Compare":
+        periods = {}
+        for label, _bs, b, _es, e in _RX_COMPARE_ROW.findall(text):
+            pb, pe = parse_oracle_ts(b), parse_oracle_ts(e)
+            if pb and pe and label.lower() not in periods:
+                periods[label.lower()] = (pb, pe)
+        if periods:
+            info.periods = sorted(periods.values())
+            info.begin = min(p[0] for p in info.periods)
+            info.end = max(p[1] for p in info.periods)
+            info.time_source = "snapshot"
     # 2) ASH: Analysis Begin/End Time
     if not (info.begin and info.end):
         found = {k: parse_oracle_ts(v) for k, v in _RX_ASH.findall(text)}
@@ -167,6 +185,8 @@ def parse_awr(path: Path) -> AwrInfo:
         stamps = [t for t in (parse_oracle_ts(v) for v in _RX_ORA_TS.findall(text[:20000])) if t]
         if len(stamps) >= 2:
             info.begin, info.end, info.time_source = min(stamps), max(stamps), "fallback"
+    if info.begin and info.end and not info.periods:
+        info.periods = [(info.begin, info.end)]
     m = _RX_DBNAME.search(text)
     if m:
         info.db_name = m.group(1)

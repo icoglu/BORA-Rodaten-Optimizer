@@ -84,6 +84,22 @@ def test_awr_compare_spans_both_periods(tmp_path: Path):
     info = detect.parse_awr(p)
     assert info.report_type == "AWR Compare"
     assert (info.begin, info.end) == (datetime(2026, 9, 26, 10, 0, 5), datetime(2026, 9, 27, 11, 0, 4))
+    assert info.periods == [(datetime(2026, 9, 26, 10, 0, 5), datetime(2026, 9, 26, 11, 0, 7)),
+                            (datetime(2026, 9, 27, 10, 0, 2), datetime(2026, 9, 27, 11, 0, 4))]
+
+
+def test_awr_compare_gives_one_package_per_period(tmp_path: Path):
+    from app import packager
+    from app.catalog import Catalog
+    inbox = tmp_path / "inbox" / "db"
+    inbox.mkdir(parents=True)
+    _w(inbox, "awrdiff_1_100_1_200.html", COMPARE_HTML)
+    cat = Catalog(tmp_path / "c.sqlite3")
+    cat.scan({"inbox": tmp_path / "inbox"})
+    recs = cat.all()
+    assert recs[0].days == ["2026-09-26", "2026-09-27"]
+    names = [w.name for w in packager.plan_windows(recs, "awr")]
+    assert names == ["BORA_2026-09-26_1000-1100", "BORA_2026-09-27_1000-1100"]  # nicht eine 25-h-Spanne
 
 
 def test_server_log_as_html(tmp_path: Path):

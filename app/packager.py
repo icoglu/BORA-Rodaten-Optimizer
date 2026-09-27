@@ -57,6 +57,14 @@ def _in_range(d: date, date_from: Optional[date], date_to: Optional[date]) -> bo
     return (date_from is None or d >= date_from) and (date_to is None or d <= date_to)
 
 
+def awr_periods(rec: FileRecord) -> list[tuple[datetime, datetime]]:
+    """Analysezeiträume eines Oracle-Reports (AWR-Compare: zwei getrennte)."""
+    periods = [(datetime.fromisoformat(b), datetime.fromisoformat(e)) for b, e in rec.info.get("periods") or []]
+    if not periods and rec.first and rec.last:
+        periods = [(rec.first, rec.last)]
+    return periods
+
+
 def plan_windows(records: list[FileRecord], mode: str, prefix: str = "BORA", margin_min: int = 0,
                  date_from: Optional[date] = None, date_to: Optional[date] = None) -> list[Window]:
     if mode not in MODES:
@@ -76,21 +84,22 @@ def plan_windows(records: list[FileRecord], mode: str, prefix: str = "BORA", mar
             start = datetime.combine(day, time.min)
             windows[d] = Window(f"{prefix}_{d}", start, start + timedelta(days=1))
         for w in windows.values():
-            w.awr = [a for a in awrs if w.overlaps(a.first, a.last)]
+            w.awr = [a for a in awrs if any(w.overlaps(b, e) for b, e in awr_periods(a))]
     else:
         margin = timedelta(minutes=max(margin_min, 0))
         for a in sorted(awrs, key=lambda r: r.first):  # type: ignore[arg-type,return-value]
-            assert a.first and a.last
-            if not (_in_range(a.first.date(), date_from, date_to) or _in_range(a.last.date(), date_from, date_to)):
-                continue
-            name = f"{prefix}_{_fmt_range(a.first, a.last)}"
-            start, end = a.first - margin, a.last + margin + timedelta(seconds=1)
-            w = windows.get(name)
-            if w is None:
-                windows[name] = Window(name, start, end, [a])
-            else:  # z.B. RAC: mehrere Instanzen im selben Snapshot-Intervall
-                w.start, w.end = min(w.start, start), max(w.end, end)
-                w.awr.append(a)
+            for begin, end in awr_periods(a):
+                if not (_in_range(begin.date(), date_from, date_to) or _in_range(end.date(), date_from, date_to)):
+                    continue
+                name = f"{prefix}_{_fmt_range(begin, end)}"
+                start, stop = begin - margin, end + margin + timedelta(seconds=1)
+                w = windows.get(name)
+                if w is None:
+                    windows[name] = Window(name, start, stop, [a])
+                else:  # z.B. RAC: mehrere Instanzen im selben Snapshot-Intervall
+                    w.start, w.end = min(w.start, start), max(w.end, stop)
+                    if a not in w.awr:
+                        w.awr.append(a)
     return sorted(windows.values(), key=lambda w: (w.start, w.name))
 
 
