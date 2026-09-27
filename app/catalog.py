@@ -116,7 +116,7 @@ class Catalog:
             c.execute("DELETE FROM files WHERE id=?", (file_id,))
 
     # ------------------------------------------------------------------ Scan
-    def scan(self, roots: dict[str, Path], progress: Callable[[str], None] = lambda _m: None) -> dict:
+    def scan(self, roots: dict[str, Path], progress: Callable[..., None] = lambda *_a: None) -> dict:
         """Verzeichnisse rekursiv einlesen; nur neue/geänderte Dateien analysieren."""
         seen: set[str] = set()
         stats = {"neu": 0, "unverändert": 0, "entfernt": 0, "fehler": 0}
@@ -124,21 +124,24 @@ class Catalog:
             rows = c.execute("SELECT path,size,mtime,override FROM files").fetchall()
         known = {r["path"]: (r["size"], r["mtime"]) for r in rows}
         overrides = {r["path"]: r["override"] for r in rows}
+        candidates = []
         for label, root in roots.items():
-            if not root.is_dir():
+            if root.is_dir():
+                candidates += [(label, root, p) for p in sorted(root.rglob("*"))
+                               if p.is_file() and not any(x.startswith(".") for x in p.relative_to(root).parts)]
+        for n, (label, root, path) in enumerate(candidates):
+            key = str(path)
+            seen.add(key)
+            st = path.stat()
+            if known.get(key) == (st.st_size, st.st_mtime):
+                stats["unverändert"] += 1
                 continue
-            for path in sorted(root.rglob("*")):
-                if not path.is_file() or any(p.startswith(".") for p in path.relative_to(root).parts):
-                    continue
-                key = str(path)
-                seen.add(key)
-                st = path.stat()
-                if known.get(key) == (st.st_size, st.st_mtime):
-                    stats["unverändert"] += 1
-                    continue
-                progress(f"Analysiere {label}/{path.relative_to(root)}")
-                self._analyse_and_store(label, root, path, st.st_size, st.st_mtime, overrides.get(key))
-                stats["neu"] += 1
+            name = f"Analysiere {n + 1}/{len(candidates)}: {label}/{path.relative_to(root)}"
+            progress(name, n * 100 / len(candidates))
+            file_progress = lambda frac, _n=n, _name=name: progress(_name, (_n + frac) * 100 / len(candidates))
+            self._analyse_and_store(label, root, path, st.st_size, st.st_mtime, overrides.get(key),
+                                    file_progress)
+            stats["neu"] += 1
         with self._conn() as c:
             for key in set(known) - seen:
                 c.execute("DELETE FROM files WHERE path=?", (key,))
@@ -156,7 +159,8 @@ class Catalog:
         self._analyse_and_store(rec.root, root, rec.path, st.st_size, st.st_mtime, rec.override)
 
     def _analyse_and_store(self, label: str, root: Path, path: Path, size: int, mtime: float,
-                           override: Optional[str] = None) -> None:
+                           override: Optional[str] = None,
+                           file_progress: Optional[Callable[[float], None]] = None) -> None:
         detected, first, last, days, info, error = detect.UNKNOWN, None, None, [], {}, None
         try:
             detected = detect.classify(path)
@@ -172,7 +176,7 @@ class Catalog:
                 else:
                     error = "Oracle-Report: Beginn/Ende nicht gefunden"
             elif category in detect.LOG_CATEGORIES:
-                li = detect.scan_log(path)
+                li = detect.scan_log(path, file_progress)
                 first, last, days = li.first, li.last, sorted(li.days)
                 info = {"lines": li.lines, "stamped_lines": li.stamped_lines}
                 if li.lines and not li.stamped_lines:

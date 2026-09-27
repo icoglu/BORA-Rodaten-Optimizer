@@ -180,7 +180,7 @@ def _slice_log(rec: FileRecord, windows: list[Window], by_day: Optional[dict[str
 
 
 def build(records: list[FileRecord], windows: list[Window], out_dir: Path, work_dir: Path,
-          mode: str, progress: Callable[[str], None] = lambda _m: None) -> list[dict]:
+          mode: str, progress: Callable[..., None] = lambda *_a: None) -> list[dict]:
     out_dir.mkdir(parents=True, exist_ok=True)
     work_dir.mkdir(parents=True, exist_ok=True)
     logs = [r for r in records if r.category in detect.LOG_CATEGORIES and r.first and r.last]
@@ -192,7 +192,7 @@ def build(records: list[FileRecord], windows: list[Window], out_dir: Path, work_
         # 1) Logs zerschneiden - jede Datei wird genau einmal gelesen
         per_window: dict[int, list[tuple[FileRecord, _Slice]]] = {}
         for n, rec in enumerate(logs, 1):
-            progress(f"Log {n}/{len(logs)}: {rec.root}/{rec.rel}")
+            progress(f"Zerlege Log {n}/{len(logs)}: {rec.root}/{rec.rel}", (n - 1) * 80 / max(len(logs), 1))
             for idx, sl in _slice_log(rec, windows, by_day, tmp).items():
                 per_window.setdefault(idx, []).append((rec, sl))
 
@@ -201,7 +201,7 @@ def build(records: list[FileRecord], windows: list[Window], out_dir: Path, work_
             slices = per_window.get(idx, [])
             if not slices and not w.awr:
                 continue
-            progress(f"Erzeuge {w.name}.zip ({idx + 1}/{len(windows)})")
+            progress(f"Erzeuge {w.name}.zip ({idx + 1}/{len(windows)})", 80 + idx * 20 / max(len(windows), 1))
             results.append(_write_zip(w, slices, out_dir, mode))
             shutil.rmtree(tmp / str(idx), ignore_errors=True)
     return results

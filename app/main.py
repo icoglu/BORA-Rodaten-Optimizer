@@ -293,7 +293,8 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
     @app.get("/api/status")
     def api_status():
         s = jobs.state
-        return {"name": s.name, "running": s.running, "message": s.message, "started": s.started,
+        return {"name": s.name, "running": s.running, "message": s.message, "percent": s.percent,
+                "started": s.started,
                 "finished": s.finished, "error": s.error, "result": s.result}
 
     @app.get("/api/files")

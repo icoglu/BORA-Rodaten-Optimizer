@@ -16,6 +16,7 @@ class JobState:
     name: str = ""
     running: bool = False
     message: str = "Bereit"
+    percent: Optional[float] = None  # 0-100, None = unbestimmt
     started: Optional[str] = None
     finished: Optional[str] = None
     result: Any = None
@@ -29,8 +30,9 @@ class JobRunner:
         self.state = JobState()
         self._queued: Optional[tuple[str, Callable[[Callable[[str], None]], Any]]] = None
 
-    def progress(self, msg: str) -> None:
+    def progress(self, msg: str, percent: Optional[float] = None) -> None:
         self.state.message = msg
+        self.state.percent = None if percent is None else max(0.0, min(100.0, round(percent, 1)))
 
     def submit(self, name: str, fn: Callable[[Callable[[str], None]], Any]) -> bool:
         with self._lock:
@@ -55,6 +57,7 @@ class JobRunner:
         try:
             self.state.result = fn(self.progress)
             self.state.message = f"{name} abgeschlossen"
+            self.state.percent = 100.0
         except Exception as exc:
             log.error("Job %s fehlgeschlagen:\n%s", name, traceback.format_exc())
             self.state.error = f"{type(exc).__name__}: {exc}"

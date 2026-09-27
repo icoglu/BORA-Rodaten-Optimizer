@@ -12,6 +12,8 @@ import zipfile
 from pathlib import Path
 from typing import Callable
 
+Progress = Callable[..., None]  # progress(meldung, prozent=None)
+
 ARCHIVE_SUFFIXES = (".zip", ".tar", ".tar.gz", ".tgz")
 BROKEN_SUFFIX = ".defekt"
 CHUNK = 4 * 1024 * 1024
@@ -42,7 +44,7 @@ def _check_space(dest: Path, needed: int) -> None:
                            f"frei {free / 2**30:.1f} GB")
 
 
-def extract_archive(archive: Path, dest: Path, progress: Callable[[str], None] = lambda _m: None) -> int:
+def extract_archive(archive: Path, dest: Path, progress: Progress = lambda *_a: None) -> int:
     """Archiv nach ``dest`` entpacken. Pfade und Platzbedarf werden *vor* dem
     ersten geschriebenen Byte geprüft. Liefert die Anzahl entpackter Dateien."""
     dest.mkdir(parents=True, exist_ok=True)
@@ -55,26 +57,41 @@ def extract_archive(archive: Path, dest: Path, progress: Callable[[str], None] =
             members = [i for i in zf.infolist() if not i.is_dir()]
             _check_members(dest, [i.filename for i in members])
             _check_space(dest, sum(i.file_size for i in members))
+            total = sum(i.file_size for i in members) or 1
+            done = 0
             for n, info in enumerate(members, 1):
-                progress(f"Entpacke {archive.name}: {n}/{len(members)} {info.filename}")
+                label = f"Entpacke {archive.name}: {n}/{len(members)} {info.filename}"
+                progress(label, done * 100 / total)
                 target = dest / info.filename
                 target.parent.mkdir(parents=True, exist_ok=True)
                 with zf.open(info) as src, open(target, "wb") as dst:
-                    shutil.copyfileobj(src, dst, CHUNK)
+                    since = 0
+                    while chunk := src.read(CHUNK):
+                        dst.write(chunk)
+                        done += len(chunk)
+                        since += len(chunk)
+                        if since >= 64 * CHUNK:  # alle ~256 MB melden (große Einzeldateien)
+                            progress(label, done * 100 / total)
+                            since = 0
+            progress(f"Entpacke {archive.name}: fertig", 100)
             return len(members)
     try:
         with tarfile.open(archive) as tf:
             members = [m for m in tf.getmembers() if m.isfile()]
             _check_members(dest, [m.name for m in members])
             _check_space(dest, sum(m.size for m in members))
-            progress(f"Entpacke {archive.name}: {len(members)} Dateien")
-            tf.extractall(dest, members=members, filter="data")
+            total = sum(m.size for m in members) or 1
+            done = 0
+            for n, m in enumerate(members, 1):
+                progress(f"Entpacke {archive.name}: {n}/{len(members)} {m.name}", done * 100 / total)
+                tf.extract(m, dest, filter="data")
+                done += m.size
             return len(members)
     except tarfile.TarError as exc:
         raise ArchiveError(f"Kein gültiges TAR: {exc}") from None
 
 
-def extract_pending(inbox: Path, progress: Callable[[str], None] = lambda _m: None) -> dict:
+def extract_pending(inbox: Path, progress: Progress = lambda *_a: None) -> dict:
     """Alle Archive in der Inbox entpacken (Zielordner = Archivname ohne Endung)
     und danach löschen. Defekte Archive werden in ``*.defekt`` umbenannt."""
     stats: dict = {"archive": 0, "entpackt": 0, "fehler": []}

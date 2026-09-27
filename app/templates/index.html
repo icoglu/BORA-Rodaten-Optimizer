@@ -19,6 +19,12 @@
 <section id="job" class="card job {% if job.running %}running{% elif job.error %}error{% endif %}"
          data-running="{{ 'true' if job.running else 'false' }}">
   <strong>Status:</strong> <span id="job-msg">{{ job.message }}</span>
+  {% if job.running %}
+  <div class="prow job-meter">
+    <div class="meter{% if job.percent is none %} indet{% endif %}" role="progressbar" aria-label="{{ job.name }}"><span style="width: {{ job.percent or 0 }}%"></span></div>
+    <span class="ppct" id="job-pct">{% if job.percent is not none %}{{ job.percent|round|int }} %{% endif %}</span>
+  </div>
+  {% endif %}
   {% if job.error %}<div class="err">{{ job.error }}</div>{% endif %}
   {% if job.result and not job.running %}
     {% if job.result.zips is defined %}
@@ -37,9 +43,20 @@
     <label>Dateien <input type="file" name="files" multiple required></label>
     <p class="muted">access.log*, server*.log* (auch rotiert / .gz), Oracle-Reports als HTML/Text (AWR, ASH, ADDM, AWR-Global/Compare, Statspack) oder Archive (.zip auch &gt; 4 GB, .tar.gz) – werden automatisch entpackt.</p>
     <button type="submit">Hochladen &amp; analysieren</button>
-    <div id="upload-progress" hidden>
-      <progress max="100" value="0"></progress>
-      <span class="small" id="upload-text"></span>
+    <div id="upload-panel" class="progress-panel" hidden aria-live="polite">
+      <div class="prow total">
+        <span class="pname">Gesamt</span>
+        <div class="meter" role="progressbar" aria-label="Upload gesamt" aria-valuemin="0" aria-valuemax="100"><span></span></div>
+        <span class="ppct">0 %</span>
+        <span class="pinfo small muted"></span>
+      </div>
+      <div id="upload-files"></div>
+      <div class="prow phase" id="upload-phase" hidden>
+        <span class="pname">Verarbeitung</span>
+        <div class="meter indet" role="progressbar" aria-label="Verarbeitung"><span></span></div>
+        <span class="ppct"></span>
+        <span class="pinfo small muted"></span>
+      </div>
     </div>
   </form>
   <form action="/scan" method="post" class="inline">
@@ -156,43 +173,138 @@
 
 </main>
 <script>
-// Streaming-Upload: jede Datei als roher Request-Body (PUT) - ohne Multipart,
-// mit Fortschritt; geeignet für Archive > 4 GB.
+// Streaming-Upload: jede Datei als roher Request-Body (PUT) - ohne Multipart;
+// Fortschritt als Balkendiagramm (gesamt + je Datei), danach Verarbeitung.
+function setMeter(meter, pct) {
+  const known = pct !== null && pct !== undefined;
+  const bar = meter.firstElementChild;
+  if (known && meter.classList.contains('indet')) {
+    // Wechsel von "unbestimmt" auf Prozent: ohne Übergangsanimation springen
+    bar.style.transition = 'none';
+    meter.classList.remove('indet');
+    bar.style.width = pct + '%';
+    void bar.offsetWidth;
+    bar.style.transition = '';
+    return;
+  }
+  meter.classList.toggle('indet', !known);
+  bar.style.width = known ? pct + '%' : '';
+  if (known) meter.setAttribute('aria-valuenow', Math.round(pct)); else meter.removeAttribute('aria-valuenow');
+}
+const fmtSize = n => n >= 1073741824 ? (n / 1073741824).toFixed(2) + ' GB'
+  : n >= 1048576 ? (n / 1048576).toFixed(1) + ' MB' : (n / 1024).toFixed(0) + ' KB';
+const fmtTime = s => !isFinite(s) ? '' : s >= 3600 ? `${Math.floor(s / 3600)} h ${Math.round(s % 3600 / 60)} min`
+  : s >= 60 ? `${Math.floor(s / 60)} min ${Math.round(s % 60)} s` : `${Math.max(1, Math.round(s))} s`;
+
 (function () {
   const form = document.getElementById('upload-form');
-  const box = document.getElementById('upload-progress');
-  const bar = box.querySelector('progress');
-  const text = document.getElementById('upload-text');
-  const fmt = n => n >= 1073741824 ? (n / 1073741824).toFixed(2) + ' GB' : (n / 1048576).toFixed(1) + ' MB';
-  function put(file, source, idx, total) {
+  const panel = document.getElementById('upload-panel');
+  const list = document.getElementById('upload-files');
+  const totalRow = panel.querySelector('.prow.total');
+  const phase = document.getElementById('upload-phase');
+
+  function fileRow(file) {
+    const row = document.createElement('div');
+    row.className = 'prow';
+    row.innerHTML = '<span class="pname"></span><div class="meter" role="progressbar" aria-valuemin="0" aria-valuemax="100"><span></span></div>'
+      + '<span class="ppct">0 %</span><span class="pinfo small muted">wartet</span>';
+    row.querySelector('.pname').textContent = file.name;
+    row.querySelector('.pname').title = file.name;
+    row.querySelector('.meter').setAttribute('aria-label', file.name);
+    list.appendChild(row);
+    return row;
+  }
+
+  function put(file, source, row, onBytes) {
     return new Promise((resolve, reject) => {
       const xhr = new XMLHttpRequest();
-      const q = new URLSearchParams({ name: file.name, source: source });
-      xhr.open('PUT', '/api/upload?' + q.toString());
+      xhr.open('PUT', '/api/upload?' + new URLSearchParams({ name: file.name, source: source }));
       xhr.setRequestHeader('Content-Type', 'application/octet-stream');
+      row.classList.add('active');
+      row.querySelector('.pinfo').textContent = 'läuft · ' + fmtSize(file.size);
       xhr.upload.onprogress = e => {
-        if (!e.lengthComputable) return;
-        bar.value = Math.floor(e.loaded / e.total * 100);
-        text.textContent = `Datei ${idx}/${total}: ${file.name} – ${fmt(e.loaded)} / ${fmt(e.total)}`;
+        const loaded = e.lengthComputable ? e.loaded : 0;
+        const pct = file.size ? loaded / file.size * 100 : 100;
+        setMeter(row.querySelector('.meter'), pct);
+        row.querySelector('.ppct').textContent = Math.floor(pct) + ' %';
+        onBytes(loaded);
       };
-      xhr.onload = () => xhr.status < 300 ? resolve(JSON.parse(xhr.responseText))
-        : reject(new Error(file.name + ': HTTP ' + xhr.status + ' ' + xhr.responseText));
-      xhr.onerror = () => reject(new Error(file.name + ': Netzwerkfehler'));
+      xhr.onload = () => {
+        row.classList.remove('active');
+        if (xhr.status < 300) {
+          setMeter(row.querySelector('.meter'), 100);
+          row.querySelector('.ppct').textContent = '100 %';
+          row.classList.add('done');
+          row.querySelector('.pinfo').textContent = '✓ fertig · ' + fmtSize(file.size);
+          onBytes(file.size);
+          resolve();
+        } else {
+          row.classList.add('failed');
+          row.querySelector('.pinfo').textContent = '✗ Fehler (HTTP ' + xhr.status + ')';
+          reject(new Error(file.name + ': HTTP ' + xhr.status + ' ' + xhr.responseText));
+        }
+      };
+      xhr.onerror = () => {
+        row.classList.remove('active'); row.classList.add('failed');
+        row.querySelector('.pinfo').textContent = '✗ Netzwerkfehler';
+        reject(new Error(file.name + ': Netzwerkfehler'));
+      };
       xhr.send(file);
     });
   }
+
+  function watchProcessing(msg) {
+    phase.hidden = false;
+    const meter = phase.querySelector('.meter');
+    const timer = setInterval(async () => {
+      try {
+        const s = await (await fetch('/api/status')).json();
+        setMeter(meter, s.running ? s.percent : 100);
+        phase.querySelector('.ppct').textContent = s.percent !== null ? Math.round(s.running ? s.percent : 100) + ' %' : '';
+        phase.querySelector('.pinfo').textContent = s.message;
+        if (!s.running) {
+          clearInterval(timer);
+          phase.classList.add(s.error ? 'failed' : 'done');
+          setTimeout(() => { location.href = '/?' + new URLSearchParams(s.error ? { msg: s.error, level: 'error' } : { msg }); }, 800);
+        }
+      } catch (e) { /* weiter versuchen */ }
+    }, 700);
+  }
+
   form.addEventListener('submit', async ev => {
     ev.preventDefault();
     const files = [...form.querySelector('input[type=file]').files];
+    if (!files.length) return;
     const source = form.querySelector('input[name=source]').value
       || 'upload-' + new Date().toISOString().slice(0, 19).replace(/[-:]/g, '').replace('T', '-');
-    form.querySelector('button').disabled = true;
-    box.hidden = false;
+    form.querySelector('button[type=submit]').disabled = true;
+    list.textContent = '';
+    panel.hidden = false;
+    const rows = files.map(fileRow);
+    const totalBytes = files.reduce((a, f) => a + f.size, 0) || 1;
+    let doneBytes = 0;
+    const t0 = performance.now();
+    const updateTotal = current => {
+      const sent = doneBytes + current;
+      const pct = sent / totalBytes * 100;
+      const secs = (performance.now() - t0) / 1000;
+      const rate = secs > 0.5 ? sent / secs : 0;
+      setMeter(totalRow.querySelector('.meter'), pct);
+      totalRow.querySelector('.ppct').textContent = Math.floor(pct) + ' %';
+      totalRow.querySelector('.pinfo').textContent = `${fmtSize(sent)} / ${fmtSize(totalBytes)}`
+        + (rate ? ` · ${fmtSize(rate)}/s · noch ${fmtTime((totalBytes - sent) / rate)}` : '');
+    };
     try {
-      for (let i = 0; i < files.length; i++) await put(files[i], source, i + 1, files.length);
-      location.href = '/?' + new URLSearchParams({ msg: `${files.length} Datei(en) nach inbox/${source} hochgeladen. Archive werden entpackt, Scan läuft …` });
+      for (let i = 0; i < files.length; i++) {
+        await put(files[i], source, rows[i], updateTotal);
+        doneBytes += files[i].size;
+      }
+      updateTotal(0);
+      totalRow.classList.add('done');
+      watchProcessing(`${files.length} Datei(en) nach inbox/${source} hochgeladen und verarbeitet.`);
     } catch (e) {
-      location.href = '/?' + new URLSearchParams({ msg: e.message, level: 'error' });
+      totalRow.classList.add('failed');
+      setTimeout(() => { location.href = '/?' + new URLSearchParams({ msg: e.message, level: 'error' }); }, 1500);
     }
   });
 })();
@@ -204,6 +316,8 @@
     try {
       const s = await (await fetch('/api/status')).json();
       document.getElementById('job-msg').textContent = s.message;
+      const m = job.querySelector('.meter');
+      if (m) { setMeter(m, s.percent); document.getElementById('job-pct').textContent = s.percent !== null ? Math.round(s.percent) + ' %' : ''; }
       if (!s.running) { clearInterval(timer); location.href = '/'; }
     } catch (e) { /* Netzwerkfehler: weiter versuchen */ }
   }, 1500);

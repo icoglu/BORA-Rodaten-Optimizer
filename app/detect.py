@@ -7,7 +7,7 @@ import re
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import BinaryIO, Optional
+from typing import BinaryIO, Callable, Optional
 
 from .timestamps import LineTimestampParser, parse_text
 
@@ -205,12 +205,20 @@ class LogInfo:
     days: set[str] = field(default_factory=set)
 
 
-def scan_log(path: Path) -> LogInfo:
+def scan_log(path: Path, progress: Optional[Callable[[float], None]] = None) -> LogInfo:
+    """``progress(anteil 0..1)`` wird bei großen, unkomprimierten Dateien periodisch gemeldet."""
     info = LogInfo()
     parser = LineTimestampParser()
+    size = path.stat().st_size
+    report = progress is not None and not is_gzip(path) and size > 0
+    read = 0
     with open_binary(path) as fh:
         for line in fh:
             info.lines += 1
+            if report:
+                read += len(line)
+                if info.lines % 200_000 == 0:
+                    progress(read / size)
             ts = parser.parse(line)
             if ts is None:
                 continue
