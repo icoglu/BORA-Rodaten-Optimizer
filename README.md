@@ -31,9 +31,11 @@ werden entfernt (abschaltbar mit `BORA_AUTO_PACKAGE=0`).
 
 → `BORA_2026-09-27_1000-1100.zip`.
 
-Aus den Log-Dateien werden **nur die Zeilen zwischen Begin und End Snap
-Time** übernommen – nicht die ganzen Dateien (Beispiel: 24-h-Log mit
-86 400 Zeilen → 3 603 Zeilen für einen 1-h-Snapshot).
+Aus den Log-Dateien wird **der komplette Tag des AWR-Reports** übernommen
+(00:00–23:59, Beispiel: 48-h-Log → genau die 86 400 Zeilen des AWR-Tages),
+aber keine anderen Tage. Mit `BORA_LOG_SCOPE=snap` werden stattdessen nur die
+Zeilen zwischen Begin und End Snap Time übernommen. Der Log-Zeitraum steht in
+der `manifest.json` unter `log_zeitraum`.
 
 **Regel 2 – Kalendertag (standardmäßig aus).** Mit `BORA_DAY_PACKAGES=1`
 werden zusätzlich alle Dateien pro Tag zusammengeführt →
@@ -284,6 +286,7 @@ erfasst. Vollständig inkl. Volume: `docker compose down -v`.
 | `BORA_ZIP_PREFIX` | `BORA` | Präfix der ZIP-Namen |
 | `BORA_DAY_PACKAGES` | `0` | Zusätzlich Tages-Pakete (ganze Tage) automatisch erzeugen |
 | `BORA_OTHER_MAX_MB` | `0` | Größenlimit für sonstige Dateien im Paket (`0` = unbegrenzt) |
+| `BORA_LOG_SCOPE` | `tag` | Log-Zeilen in AWR-Paketen: `tag` = kompletter Tag des AWR-Reports, `snap` = nur Snap Time |
 | `BORA_REQUIRE_LOGS` | `1` | AWR-Report ohne passende Log-Zeilen in der Snap Time → kein Paket |
 | `BORA_REQUIRE_AWR` | `1` | Ohne AWR-Report kein Paket (`0` = auch Tage/Reports ohne AWR paketieren) |
 | `BORA_AWR_MARGIN_MIN` | `0` | Puffer in Minuten um den AWR-Zeitraum bei automatischen AWR-Paketen |
