@@ -14,17 +14,95 @@ Web-GUI im Docker-Container, die Rohdaten zur Performance-Analyse **sammelt**,
 Die Kategorie wird primär am **Inhalt** erkannt (Dateiname nur als Rückfallebene)
 und lässt sich pro Datei in der GUI übersteuern.
 
-## Paketierungsregel
+## Paketierungsregeln
 
-> Alle Reports werden passend zum Zeitrahmen zusammengeführt und in einzelne,
-> mit Datum gekennzeichnete ZIP-Pakete geschrieben.
+Beide Regeln laufen **automatisch nach jedem Upload bzw. Einlesen**; neu
+erstellt werden nur betroffene Zeiträume/Tage, nicht mehr gültige Pakete
+werden entfernt (abschaltbar mit `BORA_AUTO_PACKAGE=0`).
 
-| Modus | ZIP-Name | Inhalt |
-|-------|----------|--------|
-| **Pro Kalendertag** (Standard) | `BORA_2026-09-27.zip` | alle Oracle-Reports, deren Intervall den Tag berührt, und genau die Access-/Server-Log-Zeilen dieses Tages |
-| **Pro AWR-Intervall** | `BORA_2026-09-27_1000-1100.zip` | der/die Reports des Snapshot-Intervalls (RAC-Instanzen zusammengeführt) und die Log-Zeilen darin, optional ± Puffer in Minuten |
+**Regel 1 – AWR-Aufzeichnungszeitraum (Vorrang).** Für jeden AWR-Report
+(HTML oder Text, auch RAC/Global/Compare) wird der Aufzeichnungszeitraum
+(Begin Snap – End Snap) erkannt. Dazu werden zusammengeführt:
 
-Optional lässt sich der Zeitraum per *von/bis* einschränken.
+* alle `access.log*`- und `server*.log*`-Zeilen dieses Zeitraums (optional
+  ± Puffer: `BORA_AWR_MARGIN_MIN`),
+* alle anderen Oracle-Reports (ASH, ADDM, Statspack), deren Zeitraum sich
+  mit dem AWR-Zeitraum überschneidet.
+
+→ `BORA_2026-09-27_1000-1100.zip`.
+
+Aus den Log-Dateien werden **nur die Zeilen zwischen Begin und End Snap
+Time** übernommen – nicht die ganzen Dateien (Beispiel: 24-h-Log mit
+86 400 Zeilen → 3 603 Zeilen für einen 1-h-Snapshot).
+
+**Regel 2 – Kalendertag (standardmäßig aus).** Mit `BORA_DAY_PACKAGES=1`
+werden zusätzlich alle Dateien pro Tag zusammengeführt →
+`BORA_2026-09-27.zip` (ganze Tage, nur für Tage mit AWR-Report). Per Button
+jederzeit auch manuell möglich.
+
+**AWR-Report ohne Logs: kein Paket.** Ein Paket entsteht nur, wenn zum
+AWR-Report ein `access.log*` **oder** `server*.log*` mit Zeilen in der Snap
+Time vorhanden ist (eines von beiden genügt). Findet sich keine solche
+Log-Zeile (auch wenn Logs aus anderen Zeiträumen
+vorliegen), wird kein Paket erzeugt. Kommen passende Logs später dazu,
+entsteht das Paket automatisch; werden sie gelöscht, wird es entfernt.
+Abschaltbar mit `BORA_REQUIRE_LOGS=0`.
+
+**Alle Dateien, die zum Zeitrahmen passen.** Alle weiteren Dateien (z. B.
+Thread-Dumps, GC-Logs, CSV-/nmon-/sar-Exporte, Konfigurationen, Bilder) kommen
+vollständig unter `sonstige/` in jedes Paket, **dessen Zeitraum sie treffen**:
+
+| Zeitangabe der Datei | ins Paket, wenn … |
+|---|---|
+| Zeitstempel im Inhalt (von–bis) | sich von–bis mit dem Paket-Zeitraum überschneidet |
+| Datum mit Uhrzeit im Namen (`dump_2026-09-27_1030.txt`, `jstack_20260927103015.txt`) | der Zeitpunkt im Paket-Zeitraum liegt |
+| Original-Änderungszeitpunkt (Browser-Upload überträgt ihn, ZIP-Einträge und eingebundene Verzeichnisse behalten ihn) | der Zeitpunkt im Paket-Zeitraum liegt |
+| nur Datum im Namen (`gc_20260927.csv`, `27.09.2026`) | der Tag passt (genauer nicht bekannt) |
+
+**Inhaltsprüfung:** Der Inhalt hat immer Vorrang. Jede Textdatei wird
+vollständig durchsucht – Zeitangaben überall in der Zeile (auch lange
+JSON/XML-Zeilen, HTML-Exporte, CSV-Spalten) sowie reine Datumsangaben.
+Maßgeblich sind die **tatsächlich belegten Zeitabschnitte**: ein einzelnes
+abweichendes Datum (z. B. „Copyright 2019“) dehnt den Zeitrahmen nicht aus.
+Widerspricht der Inhalt dem Dateinamen oder der Dateizeit, zählt der Inhalt;
+das Ergebnis steht je Datei in der `manifest.json` unter `inhaltspruefung`
+(„Inhalt passt“, „Inhalt maßgeblich – abweichend: …“, „kein Datum im Inhalt“).
+
+**Alle Inhalte werden gelesen und auf das Datum geprüft:**
+
+| Dateiart | Prüfung des Inhalts |
+|---|---|
+| Access-/Server-Logs (auch `.gz`, `.bz2`, `.xz`) | jede Zeile; Zeitstempel am Zeilenanfang, sonst in der ganzen Zeile (z. B. JSON-Logs) – zeilengenau zugeschnitten |
+| Oracle-Reports (AWR, ASH, ADDM …) | Zeitraum aus dem Report-Inhalt (Begin/End Snap) |
+| Text, CSV, JSON, XML, HTML | vollständig, Zeitangaben überall in der Zeile |
+| Office (`.docx`, `.xlsx`, `.pptx`, `.odt`, `.ods` …) | alle Dokument-, Tabellen- und Metadaten-Teile |
+| PDF | Seiteninhalte (entpackt) und Dokument-Datum |
+| sonstige Binärdateien | lesbare Textstellen (wie `strings`), bis `BORA_BINARY_SCAN_MB` (256) |
+
+Jede Datei im Paket trägt ihr Prüfergebnis in der `manifest.json`
+(`inhaltspruefung`, bei sonstigen Dateien zusätzlich `inhalt_gelesen_als`).
+Hinweis: In Excel als Zahl gespeicherte Datumszellen sind ohne Formatauswertung
+nicht als Datum erkennbar; Text-Zeitangaben und Metadaten werden erkannt.
+
+Ohne erkennbare Zeitangabe wird nichts geraten.
+Sonstige Dateien allein erzeugen kein Paket. Ausgenommen: EAR/WAR/JAR/RAR und
+auf `ignore` gesetzte Dateien.
+
+**Keine Redundanzen.** Identische Dateien (gleicher Inhalt, SHA-256 –
+z. B. einzeln und im ZIP hochgeladen) und derselbe Oracle-Report in mehreren
+Formaten (gleiche DB, Instanz, Snap-IDs, z. B. `.html` und `.txt`) kommen nur
+einmal ins Paket; HTML hat Vorrang, sonst das zuerst erfasste Original.
+Ausgelassene Duplikate stehen in der `manifest.json` unter
+`duplikate_ausgelassen`.
+
+**Ohne AWR-Report kein Paket.** Liegt kein AWR-Report vor, wird kein Paket
+erzeugt (auch nicht per Button); ASH-/ADDM-/Statspack-Reports ohne
+überschneidenden AWR-Zeitraum und Tage ohne AWR-Report erhalten kein Paket.
+Nicht mehr regelkonforme Pakete werden entfernt. Abschaltbar mit
+`BORA_REQUIRE_AWR=0`.
+
+Manuell (Button) lassen sich beide Varianten zusätzlich mit *von/bis* und
+Puffer neu erstellen.
 
 ZIP-Aufbau:
 
@@ -36,6 +114,11 @@ BORA_2026-09-27.zip
 ├── awr/<quelle>/awrrpt_1_100_101.html  # Report unverändert
 └── manifest.json                       # Zeitraum, Quellen, Zeilen, Snap-IDs, DB/Instanz
 ```
+
+**Einheitlicher Zeitstempel:** Das ZIP und *alle* Einträge darin – Logs,
+HTML-/Text-Reports, `manifest.json` – tragen denselben Zeitstempel: bei
+Tages-Paketen den Tag (`2026-09-27 00:00`), bei AWR-Paketen den Beginn des
+Snapshot-Intervalls (`2026-09-27 10:00`).
 
 Grundsätze:
 
@@ -164,6 +247,9 @@ docker compose --profile test run --rm tests
 * Entpacken läuft im Hintergrund-Job (keine HTTP-Timeouts); ZIP64-Archive werden
   unterstützt. Vor dem ersten geschriebenen Byte werden Pfade (Zip-Slip) und
   freier Speicherplatz geprüft. Defekte Archive werden zu `*.defekt` umbenannt.
+* **EAR-, WAR-, JAR- und RAR-Dateien werden nicht entpackt**: Liegen sie in einem
+  hochgeladenen Archiv (z. B. Domain-Export), werden sie gar nicht erst
+  herausgeschrieben; direkt hochgeladene bleiben unverändert und werden ignoriert.
 * Getestet mit einem 4,4-GB-ZIP (18 Mio. Logzeilen): Upload, Entpacken, Analyse
   und Paketierung inkl. 4,4-GB-Eintrag im Ergebnis-ZIP.
 * **Platzbedarf** auf `/data` einplanen: Archiv + entpackter Inhalt während des
@@ -178,6 +264,14 @@ Upload per Kommandozeile (z. B. direkt vom Server):
 curl -T logs.zip "http://bora-host:8088/api/upload?name=logs.zip&source=wls-prod-01"
 ```
 
+## Zurücksetzen
+
+Der Button **„Alles zurücksetzen und löschen“** (Abschnitt 4 der GUI, mit
+Sicherheitsabfrage) löscht alle hochgeladenen Dateien, alle ZIP-Pakete, den
+Katalog inkl. manueller Kategorien und die Arbeitsdateien. Eingebundene
+Log-Verzeichnisse bleiben unberührt und werden beim nächsten Einlesen wieder
+erfasst. Vollständig inkl. Volume: `docker compose down -v`.
+
 ## Konfiguration
 
 | Variable | Standard | Bedeutung |
@@ -188,6 +282,13 @@ curl -T logs.zip "http://bora-host:8088/api/upload?name=logs.zip&source=wls-prod
 | `BORA_DATA_DIR` | `/data` | Volume für Inbox, Katalog, Ausgabe |
 | `BORA_SOURCE_DIRS` | – | zusätzliche Quellverzeichnisse, `:`-getrennt (read-only genügt) |
 | `BORA_ZIP_PREFIX` | `BORA` | Präfix der ZIP-Namen |
+| `BORA_DAY_PACKAGES` | `0` | Zusätzlich Tages-Pakete (ganze Tage) automatisch erzeugen |
+| `BORA_OTHER_MAX_MB` | `0` | Größenlimit für sonstige Dateien im Paket (`0` = unbegrenzt) |
+| `BORA_REQUIRE_LOGS` | `1` | AWR-Report ohne passende Log-Zeilen in der Snap Time → kein Paket |
+| `BORA_REQUIRE_AWR` | `1` | Ohne AWR-Report kein Paket (`0` = auch Tage/Reports ohne AWR paketieren) |
+| `BORA_AWR_MARGIN_MIN` | `0` | Puffer in Minuten um den AWR-Zeitraum bei automatischen AWR-Paketen |
+| `BORA_AUTO_PACKAGE` | `1` | Tages-Pakete nach jedem Upload/Einlesen automatisch erstellen (`0` = aus) |
+| `BORA_SKIP_EXTRACT` | `.ear,.war,.jar,.rar` | Java-Anwendungsarchive: werden beim Entpacken übersprungen, selbst nie entpackt und als `ignore` eingestuft |
 | `BORA_MAX_UPLOAD_MB` | `0` | Upload-Limit je Datei, `0` = unbegrenzt |
 | `BORA_USER` / `BORA_PASSWORD` | – | aktiviert HTTP-Basic-Auth (beide setzen; TLS über Reverse-Proxy) |
 | `TZ` | `Europe/Berlin` | Zeitzone des Containers (Anzeige/Dateizeiten) |

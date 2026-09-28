@@ -17,6 +17,23 @@ class Settings:
     source_dirs: list[Path] = field(default_factory=lambda: _paths(os.environ.get("BORA_SOURCE_DIRS", "")))
     zip_prefix: str = field(default_factory=lambda: os.environ.get("BORA_ZIP_PREFIX", "BORA"))
     # 0 = unbegrenzt (Uploads > 4 GB werden gestreamt, ZIPs per Zip64 gelesen)
+    # Tages-Pakete nach jedem Upload/Einlesen automatisch erstellen bzw. aktualisieren
+    auto_package: bool = field(default_factory=lambda: os.environ.get("BORA_AUTO_PACKAGE", "1").lower() not in ("0", "false", "nein", "no"))
+    # Beim Entpacken hochgeladener Archive überspringen (Java-Anwendungsarchive)
+    skip_extract: tuple = field(default_factory=lambda: tuple(
+        s.strip().lower() if s.strip().startswith(".") else "." + s.strip().lower()
+        for s in os.environ.get("BORA_SKIP_EXTRACT", ".ear,.war,.jar,.rar").split(",") if s.strip()))
+    # Puffer in Minuten um den AWR-Aufzeichnungszeitraum bei automatischen AWR-Paketen
+    awr_margin_min: int = field(default_factory=lambda: int(os.environ.get("BORA_AWR_MARGIN_MIN", "0")))
+    # Ohne AWR-Report kein Paket (Tages-Pakete nur für Tage mit AWR-Report)
+    require_awr: bool = field(default_factory=lambda: os.environ.get("BORA_REQUIRE_AWR", "1").lower() not in ("0", "false", "nein", "no"))
+    # Tages-Pakete (ganze Tage) automatisch erzeugen - Standard aus: nur AWR-Pakete mit
+    # den Log-Zeilen der Snap Time
+    day_packages: bool = field(default_factory=lambda: os.environ.get("BORA_DAY_PACKAGES", "0").lower() in ("1", "true", "ja", "yes"))
+    # AWR-Report ohne passende Log-Zeilen in der Snap Time -> kein Paket
+    require_logs: bool = field(default_factory=lambda: os.environ.get("BORA_REQUIRE_LOGS", "1").lower() not in ("0", "false", "nein", "no"))
+    # Sonstige Dateien mit passendem Datum ins Paket; größere als dieses Limit (MB) auslassen (0 = unbegrenzt)
+    other_max_mb: int = field(default_factory=lambda: int(os.environ.get("BORA_OTHER_MAX_MB", "0")))
     max_upload_mb: int = field(default_factory=lambda: int(os.environ.get("BORA_MAX_UPLOAD_MB", "0")))
     auth_user: str = field(default_factory=lambda: os.environ.get("BORA_USER", ""))
     auth_password: str = field(default_factory=lambda: os.environ.get("BORA_PASSWORD", ""))

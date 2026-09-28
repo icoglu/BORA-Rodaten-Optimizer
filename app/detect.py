@@ -1,15 +1,21 @@
 """Kategorisierung der Rohdaten und Metadaten-Extraktion."""
 from __future__ import annotations
 
+import bz2
 import gzip
+import hashlib
+import lzma
+import os
+import zipfile
+import zlib
 import html
 import re
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import BinaryIO, Optional
+from typing import BinaryIO, Callable, Optional
 
-from .timestamps import LineTimestampParser, parse_text
+from .timestamps import LineTimestampParser, find_all, parse_text
 
 ACCESS = "access"
 SERVER = "server"
@@ -39,21 +45,45 @@ _RX_W3C_CONTENT = re.compile(rb"^#Fields:.*(?:cs-method|cs-uri)", re.M)
 _RX_SERVER_CONTENT = re.compile(rb"^####<", re.M)
 
 
-def is_gzip(path: Path) -> bool:
+def compression(path: Path) -> Optional[str]:
+    """Kompression anhand der Magic Bytes: gz, bz2, xz oder None."""
     with open(path, "rb") as fh:
-        return fh.read(2) == b"\x1f\x8b"
+        head = fh.read(6)
+    if head[:2] == b"\x1f\x8b":
+        return "gz"
+    if head[:3] == b"BZh":
+        return "bz2"
+    if head[:6] == b"\xfd7zXZ\x00":
+        return "xz"
+    return None
+
+
+def is_gzip(path: Path) -> bool:
+    return compression(path) is not None
 
 
 def open_binary(path: Path) -> BinaryIO:
-    """Öffnet Datei (transparent auch .gz) im Binärmodus - Rohdaten bleiben byte-genau."""
-    if is_gzip(path):
+    """Öffnet Datei (transparent auch .gz/.bz2/.xz) im Binärmodus - Rohdaten bleiben byte-genau."""
+    kind = compression(path)
+    if kind == "gz":
         return gzip.open(path, "rb")  # type: ignore[return-value]
+    if kind == "bz2":
+        return bz2.open(path, "rb")  # type: ignore[return-value]
+    if kind == "xz":
+        return lzma.open(path, "rb")  # type: ignore[return-value]
     return open(path, "rb")
+
+
+_COMPRESSED_SUFFIXES = (".gz", ".bz2", ".xz")
 
 
 def logical_name(name: str) -> str:
     """Dateiname ohne Kompressionsendung (server.log00012.gz -> server.log00012)."""
-    return name[:-3] if name.lower().endswith(".gz") else name
+    low = name.lower()
+    for suf in _COMPRESSED_SUFFIXES:
+        if low.endswith(suf):
+            return name[: -len(suf)]
+    return name
 
 
 def sniff(path: Path) -> bytes:
@@ -72,10 +102,15 @@ def oracle_report_type(head: bytes) -> Optional[str]:
     return None
 
 
+JAVA_ARCHIVES = (".ear", ".war", ".jar", ".rar")
+
+
 def classify(path: Path, head: Optional[bytes] = None) -> str:
     """Kategorie aus Inhalt (vorrangig) und Dateinamen ableiten."""
-    head = sniff(path) if head is None else head
     name = logical_name(path.name)
+    if name.lower().endswith(JAVA_ARCHIVES):
+        return IGNORE  # Anwendungsarchive: nicht öffnen, nicht entpacken, nicht paketieren
+    head = sniff(path) if head is None else head
     if oracle_report_type(head):
         return AWR
     if _RX_ACCESS_CONTENT.search(head) or _RX_W3C_CONTENT.search(head):
@@ -103,6 +138,7 @@ class AwrInfo:
     instance: Optional[str] = None
     report_type: Optional[str] = None
     time_source: Optional[str] = None
+    sha256: str = ""
     # Einzelne Analysezeiträume; bei AWR-Compare zwei getrennte Perioden
     periods: list[tuple[datetime, datetime]] = field(default_factory=list)
 
@@ -141,12 +177,75 @@ def parse_oracle_ts(value: str) -> Optional[datetime]:
     return parse_text(f"{m[1]} {hour:02d}:{m[3]}:{m[4] or '00'}")
 
 
+# optionale Uhrzeit direkt nach dem Datum: _1030, -103000, T10:30:00, " 10.30"
+_NAME_TIME = r"(?:[T_\-. ]?([01]\d|2[0-3])[:.\-h]?([0-5]\d)(?:[:.\-]?([0-5]\d))?)?"
+_RX_NAME_DATE = [
+    # 2026-09-27, 20260927, 2026_09_27 (+ Uhrzeit)
+    re.compile(r"(?<!\d)(20\d{2})[-_.]?(0[1-9]|1[0-2])[-_.]?(0[1-9]|[12]\d|3[01])" + _NAME_TIME + r"(?!\d)"),
+    # 27.09.2026 (+ Uhrzeit)
+    re.compile(r"(?<!\d)(0[1-9]|[12]\d|3[01])\.(0[1-9]|1[0-2])\.(20\d{2})" + _NAME_TIME + r"(?!\d)"),
+]
+
+
+def datetime_from_name(name: str) -> Optional[tuple[datetime, bool]]:
+    """Datum (ggf. mit Uhrzeit) im Dateinamen. Liefert (Zeitpunkt, Uhrzeit_bekannt)."""
+    m = _RX_NAME_DATE[0].search(name)
+    if m:
+        y, mo, d = int(m[1]), int(m[2]), int(m[3])
+    else:
+        m = _RX_NAME_DATE[1].search(name)
+        if not m:
+            return None
+        d, mo, y = int(m[1]), int(m[2]), int(m[3])
+    hh, mi, ss = m[4], m[5], m[6]
+    try:
+        if hh is not None and mi is not None:
+            return datetime(y, mo, d, int(hh), int(mi), int(ss or 0)), True
+        return datetime(y, mo, d), False
+    except ValueError:
+        return None
+
+
+def date_from_name(name: str) -> Optional[datetime]:
+    """Zeitpunkt aus dem Dateinamen (ohne Uhrzeit: 00:00)."""
+    r = datetime_from_name(name)
+    return r[0] if r else None
+
+
+# Dateizeiten vor 2000 gelten als unbekannt (Uploads ohne Original-Zeitstempel werden auf 0 gesetzt)
+TRUSTED_MTIME_FROM = datetime(2000, 1, 1).timestamp()
+
+
+def date_from_mtime(path: Path) -> Optional[datetime]:
+    """Änderungszeitpunkt der Datei - nur wenn er als Original-Zeitstempel bekannt ist."""
+    mtime = path.stat().st_mtime
+    if mtime < TRUSTED_MTIME_FROM:
+        return None
+    return datetime.fromtimestamp(mtime).replace(microsecond=0)
+
+
+def is_binary(path: Path) -> bool:
+    try:
+        with open_binary(path) as fh:
+            return b"\0" in fh.read(8192)
+    except (OSError, EOFError):
+        return True
+
+
+def file_sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with open_binary(path) as fh:
+        while chunk := fh.read(4 * 1024 * 1024):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
 def parse_awr(path: Path) -> AwrInfo:
     """Zeitfenster eines Oracle-Reports (AWR/ASH/ADDM/Statspack/Compare) bestimmen."""
     with open_binary(path) as fh:
         raw = fh.read(4 * 1024 * 1024)  # Kopfbereich reicht vollständig
     text = awr_text(raw)
-    info = AwrInfo(report_type=oracle_report_type(raw[:SNIFF_BYTES]))
+    info = AwrInfo(report_type=oracle_report_type(raw[:SNIFF_BYTES]), sha256=file_sha256(path))
     # 1) Snapshot-Intervall (AWR, AWR-Global, Statspack; Compare: beide Perioden)
     for kind, snap, ts in _RX_SNAP.findall(text):
         parsed = parse_oracle_ts(ts)
@@ -203,14 +302,26 @@ class LogInfo:
     lines: int = 0
     stamped_lines: int = 0
     days: set[str] = field(default_factory=set)
+    sha256: str = ""  # über den (entpackten) Inhalt - erkennt identische Dateien
+    whole_line: bool = False  # Zeitstempel wurden erst in der ganzen Zeile gefunden
 
 
-def scan_log(path: Path) -> LogInfo:
+def scan_log(path: Path, progress: Optional[Callable[[float], None]] = None, whole_line: bool = False) -> LogInfo:
+    """``progress(anteil 0..1)`` wird bei großen, unkomprimierten Dateien periodisch gemeldet."""
     info = LogInfo()
-    parser = LineTimestampParser()
+    parser = LineTimestampParser(whole_line)
+    size = path.stat().st_size
+    report = progress is not None and not is_gzip(path) and size > 0
+    read = 0
+    digest = hashlib.sha256()
     with open_binary(path) as fh:
         for line in fh:
+            digest.update(line)
             info.lines += 1
+            if report:
+                read += len(line)
+                if info.lines % 200_000 == 0:
+                    progress(read / size)
             ts = parser.parse(line)
             if ts is None:
                 continue
@@ -220,6 +331,11 @@ def scan_log(path: Path) -> LogInfo:
             if info.last is None or ts > info.last:
                 info.last = ts
             info.days.add(ts.date().isoformat())
+    info.sha256 = digest.hexdigest()
+    info.whole_line = whole_line
+    if info.lines and not info.stamped_lines and not whole_line:
+        # Kein Zeitstempel am Zeilenanfang: Inhalt der ganzen Zeilen prüfen (z.B. JSON-Logs)
+        return scan_log(path, progress, whole_line=True)
     return info
 
 
@@ -230,3 +346,142 @@ def days_between(begin: datetime, end: datetime) -> list[str]:
         out.append(d.isoformat())
         d += timedelta(days=1)
     return out
+
+
+# ------------------------------------------------------------ Inhaltsprüfung
+
+INTERVAL_GAP = timedelta(minutes=10)   # Zeitangaben mit kleinerem Abstand bilden einen Abschnitt
+MAX_INTERVALS = 500
+MAX_LINE_CHARS = 1_000_000             # sehr lange Zeilen (minifiziertes JSON/XML) nur bis hierhin prüfen
+
+
+@dataclass
+class ContentInfo:
+    intervals: list[tuple[datetime, datetime]] = field(default_factory=list)  # belegte Zeitabschnitte
+    stamps: int = 0
+    sha256: str = ""
+    method: str = "text"   # wie der Inhalt gelesen wurde: text | office | pdf | binary
+
+
+def _merge(points: list[tuple[datetime, datetime]], gap: timedelta) -> list[tuple[datetime, datetime]]:
+    out: list[tuple[datetime, datetime]] = []
+    for b, e in sorted(points):
+        if out and b - out[-1][1] <= gap:
+            out[-1] = (out[-1][0], max(out[-1][1], e))
+        else:
+            out.append((b, e))
+    return out
+
+
+OFFICE_SUFFIXES = (".docx", ".docm", ".xlsx", ".xlsm", ".pptx", ".pptm", ".odt", ".ods", ".odp", ".vsdx")
+BINARY_SCAN_BYTES = int(os.environ.get("BORA_BINARY_SCAN_MB", "256")) * 1024 * 1024
+_RX_TAG = re.compile(r"<[^>]+>")
+_RX_PDF_STREAM = re.compile(rb"stream\r?\n(.*?)\r?\nendstream", re.S)
+_RX_PDF_DATE = re.compile(rb"/(?:CreationDate|ModDate)\s*\(D:(\d{4})(\d{2})(\d{2})(\d{2})?(\d{2})?(\d{2})?")
+_RX_PRINTABLE = re.compile(rb"[\x20-\x7e\xc0-\xff]{6,}")
+
+
+def content_kind(path: Path) -> str:
+    """text | office | pdf | binary"""
+    try:
+        with open_binary(path) as fh:
+            head = fh.read(8192)
+    except (OSError, EOFError):
+        return "binary"
+    if head.startswith(b"%PDF"):
+        return "pdf"
+    if head.startswith(b"PK\x03\x04") and path.name.lower().endswith(OFFICE_SUFFIXES):
+        return "office"
+    return "binary" if b"\0" in head else "text"
+
+
+def _texts_office(path: Path):
+    """Alle XML-Teile eines Office-Dokuments (Inhalt, Tabellen, Folien, Metadaten) als Text."""
+    with zipfile.ZipFile(path) as zf:
+        for info in zf.infolist():
+            if info.filename.lower().endswith(".xml") and info.file_size < 512 * 1024 * 1024:
+                raw = zf.read(info).decode("utf-8", errors="replace")
+                yield _RX_TAG.sub(" ", html.unescape(raw))
+
+
+def _texts_pdf(path: Path):
+    """PDF: Dokument-Datum (CreationDate/ModDate) und entpackte Seiteninhalte als Text."""
+    with open(path, "rb") as fh:
+        raw = fh.read(BINARY_SCAN_BYTES)
+    for m in _RX_PDF_DATE.finditer(raw):
+        y, mo, d, hh, mi, ss = (x.decode() if x else "00" for x in m.groups())
+        yield f"{y}-{mo}-{d} {hh}:{mi}:{ss}"
+    for m in _RX_PDF_STREAM.finditer(raw):
+        data = m.group(1)
+        try:
+            data = zlib.decompress(data)
+        except zlib.error:
+            pass
+        # Textoperatoren: (27.09.2026) Tj  bzw. [(27.09.) -250 (2026)] TJ  -> zusammenfügen
+        parts = re.findall(rb"\(((?:\\.|[^\\)])*)\)", data)
+        text = b"".join(parts) if parts else data
+        yield text.decode("latin-1", errors="replace")
+
+
+def _texts_binary(path: Path):
+    """Beliebige Binärdatei: lesbare Textstellen (wie 'strings') - bis BORA_BINARY_SCAN_MB."""
+    with open_binary(path) as fh:
+        read, tail = 0, b""
+        while read < BINARY_SCAN_BYTES and (chunk := fh.read(4 * 1024 * 1024)):
+            read += len(chunk)
+            buf = tail + chunk
+            runs = _RX_PRINTABLE.findall(buf)
+            tail = buf[-64:]
+            yield "\n".join(r.decode("latin-1") for r in runs)
+
+
+def scan_content(path: Path, progress: Optional[Callable[[float], None]] = None) -> ContentInfo:
+    """Inhalt einer Datei lesen und nach Zeitangaben durchsuchen - überall im Text.
+    Text wird vollständig gelesen; Office-Dokumente und PDFs werden entpackt; sonstige
+    Binärdateien über ihre lesbaren Textstellen. Ergebnis sind die tatsächlich belegten
+    Zeitabschnitte; ein einzelnes abweichendes Datum dehnt den Zeitrahmen nicht auf Jahre aus."""
+    kind = content_kind(path)
+    info = ContentInfo(method=kind)
+    points: set[tuple[datetime, datetime]] = set()
+
+    def feed(text: str) -> None:
+        nonlocal points
+        stamps, dates = find_all(text)
+        for ts in stamps:
+            ts = ts.replace(second=0)
+            points.add((ts, ts + timedelta(seconds=59)))
+        for d in dates:
+            points.add((d, d + timedelta(days=1) - timedelta(seconds=1)))
+        info.stamps += len(stamps) + len(dates)
+        if len(points) > 200_000:  # Speicher begrenzen: zwischendurch verdichten
+            points = set(_merge(list(points), INTERVAL_GAP))
+
+    if kind == "text":
+        digest = hashlib.sha256()
+        size = path.stat().st_size or 1
+        read = 0
+        with open_binary(path) as fh:
+            for n, raw in enumerate(fh, 1):
+                digest.update(raw)
+                read += len(raw)
+                if progress and n % 200_000 == 0:
+                    progress(min(read / size, 1.0))
+                feed(raw[:MAX_LINE_CHARS].decode("utf-8", errors="replace"))
+        info.sha256 = digest.hexdigest()
+    else:
+        try:
+            texts = {"office": _texts_office, "pdf": _texts_pdf}.get(kind, _texts_binary)(path)
+            for text in texts:
+                for line in text.splitlines():
+                    feed(line[:MAX_LINE_CHARS])
+        except (zipfile.BadZipFile, OSError, EOFError, lzma.LZMAError) as exc:
+            info.method = f"{kind} (nicht lesbar: {type(exc).__name__})"
+        info.sha256 = file_sha256(path)
+
+    gap = INTERVAL_GAP
+    merged = _merge(list(points), gap)
+    while len(merged) > MAX_INTERVALS:
+        gap *= 2
+        merged = _merge(merged, gap)
+    info.intervals = merged
+    return info

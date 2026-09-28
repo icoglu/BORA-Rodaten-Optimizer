@@ -3,11 +3,13 @@ zeitrahmengerechten Paketieren von access.log, server*.log* und AWR-Reports."""
 from __future__ import annotations
 
 import base64
+import os
 import re
 import secrets
+import shutil
 import tempfile
 from contextlib import asynccontextmanager
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Optional
 from urllib.parse import urlencode
@@ -92,11 +94,104 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
             r[label] = d
         return r
 
+    def repackage_days(days: set[str], progress) -> dict:
+        """Tages-Pakete der betroffenen Tage neu erstellen; Tage ohne Daten mehr
+        -> veraltetes ZIP entfernen. Regel: alle Dateien eines Tages (nach
+        Zeitstempel im Inhalt) in genau ein ZIP BORA_JJJJ-MM-TT.zip."""
+        if not settings.auto_package:
+            return {}
+        records = catalog.all()
+        planned = packager.plan_windows(records, "day", settings.zip_prefix, require_awr=settings.require_awr)
+        windows = [w for w in planned if w.start.date().isoformat() in days]
+        built = packager.build(records, windows, settings.output_dir, settings.work_dir, "day",
+                               lambda msg, pct=None: progress(f"Tages-Pakete: {msg}", pct),
+                               require_logs=settings.require_logs,
+                               other_max_bytes=settings.other_max_mb * 1024 * 1024) if windows else []
+        # gültig: neu gebaute + unveränderte bestehende (nicht neu geprüfte) Tage
+        rebuilt = {f"{w.name}.zip" for w in windows}
+        valid = {b["zip"] for b in built} | ({f"{w.name}.zip" for w in planned} - rebuilt)
+        removed = 0
+        for p in settings.output_dir.glob("*.zip"):   # auch Tage ohne (mehr) AWR-Report entfernen
+            if day_zip.match(p.name) and p.name not in valid:
+                p.unlink()
+                removed += 1
+        out = {"tagespakete_aktualisiert": len(built)}
+        if removed:
+            out["tagespakete_entfernt"] = removed
+        return out
+
+    day_zip = re.compile(re.escape(settings.zip_prefix) + r"_\d{4}-\d{2}-\d{2}\.zip$")
+    awr_zip = re.compile(re.escape(settings.zip_prefix) + r"_\d{4}-\d{2}-\d{2}_\d{4}-(\d{4}|\d{4}-\d{2}-\d{2}_\d{4})\.zip$")
+
+    def repackage_awr(days: set[str], progress) -> dict:
+        """Regel 1: Je AWR-Aufzeichnungszeitraum ein ZIP mit AWR-Report(s), passenden
+        Log-Zeilen und überschneidenden Oracle-Reports. Neu erstellt werden Zeiträume
+        auf geänderten Tagen und fehlende Pakete; nicht mehr gültige werden entfernt."""
+        if not settings.auto_package:
+            return {}
+        records = catalog.all()
+        windows = packager.plan_windows(records, "awr", settings.zip_prefix, settings.awr_margin_min,
+                                             require_awr=settings.require_awr)
+        todo = [w for w in windows
+                if not (settings.output_dir / f"{w.name}.zip").exists()
+                or any(d in days for d in detect.days_between(w.start, w.end - timedelta(seconds=1)))]
+        built = packager.build(records, todo, settings.output_dir, settings.work_dir, "awr",
+                               lambda msg, pct=None: progress(f"AWR-Pakete: {msg}", pct),
+                               require_logs=settings.require_logs,
+                               other_max_bytes=settings.other_max_mb * 1024 * 1024) if todo else []
+        # gültig: neu gebaute + unveränderte bestehende; neu geprüfte ohne Log-Zeilen -> entfernen
+        rechecked = {f"{w.name}.zip" for w in todo}
+        valid = {b["zip"] for b in built} | ({f"{w.name}.zip" for w in windows} - rechecked)
+        removed = 0
+        for p in settings.output_dir.glob("*.zip"):
+            if awr_zip.match(p.name) and p.name not in valid:
+                p.unlink()
+                removed += 1
+        out = {"awr_pakete_aktualisiert": len(built)}
+        if removed:
+            out["awr_pakete_entfernt"] = removed
+        return out
+
+    def repackage(days: set[str], progress) -> dict:
+        """Regel 1: AWR-Zeiträume (nur Log-Zeilen der Snap Time); Regel 2: Tage - nur wenn aktiviert."""
+        out = repackage_awr(days, progress)
+        if settings.day_packages:
+            out.update(repackage_days(days, progress))
+        else:
+            removed = cleanup_day_zips()
+            if removed:
+                out["tagespakete_entfernt"] = removed
+        return out
+
+    def cleanup_day_zips() -> int:
+        """Tages-Pakete entfernen, die die Regeln nicht (mehr) erfüllen - z.B. Altbestand
+        ohne AWR-Report aus früheren Versionen. Gültige (manuell erzeugte) bleiben."""
+        records = catalog.all()
+        planned = packager.plan_windows(records, "day", settings.zip_prefix, require_awr=settings.require_awr)
+        if settings.require_logs:
+            planned = [w for w in planned if packager.has_log_candidates(w, records)]
+        valid = {f"{w.name}.zip" for w in planned}
+        removed = 0
+        for p in settings.output_dir.glob("*.zip"):
+            if day_zip.match(p.name) and p.name not in valid:
+                p.unlink()
+                removed += 1
+        return removed
+
+    def missing_day_packages() -> set[str]:
+        return {d for d in catalog.all_days()
+                if not (settings.output_dir / f"{settings.zip_prefix}_{d}.zip").exists()}
+
     def scan_job(progress) -> dict:
-        extracted = archives.extract_pending(settings.inbox_dir, progress)
+        extracted = archives.extract_pending(settings.inbox_dir, progress, settings.skip_extract)
         result = catalog.scan(roots(), progress)
+        if settings.auto_package:
+            extra = missing_day_packages() if settings.day_packages else set()
+            result.update(repackage(catalog.last_changed_days | extra, progress))
         if extracted["archive"] or extracted["fehler"]:
             result.update({"archive_entpackt": extracted["archive"], "dateien_aus_archiven": extracted["entpackt"]})
+        if extracted["uebersprungen"]:
+            result["nicht_entpackt"] = len(extracted["uebersprungen"])
         if extracted["fehler"]:
             result["archivfehler"] = "; ".join(extracted["fehler"])
         return result
@@ -111,6 +206,15 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
         dest.mkdir(parents=True, exist_ok=True)
         return label, dest
 
+    def set_upload_mtime(target: Path, mtime_ms: Optional[float]) -> None:
+        """Original-Änderungszeit (vom Browser: File.lastModified, ms) setzen; unbekannt -> 0,
+        damit die Upload-Zeit nicht fälschlich als Datum der Datei gilt."""
+        ts = mtime_ms / 1000 if mtime_ms and mtime_ms > 0 else 0
+        try:
+            os.utime(target, (ts, ts))
+        except (OSError, OverflowError, ValueError):
+            os.utime(target, (0, 0))
+
     def check_limit(written: int, name: str) -> None:
         if settings.max_upload_mb and written > settings.max_upload_mb * 1024 * 1024:
             raise HTTPException(413, f"{name}: größer als {settings.max_upload_mb} MB")
@@ -118,7 +222,10 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
     def outputs() -> list[dict]:
         items = []
         for p in sorted(settings.output_dir.glob("*.zip")):
-            st = p.stat()
+            try:
+                st = p.stat()
+            except FileNotFoundError:  # gerade von einem Hintergrund-Job entfernt
+                continue
             items.append({"name": p.name, "size": st.st_size, "mtime": datetime.fromtimestamp(st.st_mtime)})
         return items
 
@@ -135,13 +242,25 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
         counts = {c: 0 for c in detect.CATEGORIES}
         for f in files:
             counts[f.category] += 1
-        plan_day = packager.plan_windows(files, "day", settings.zip_prefix)
-        plan_awr = packager.plan_windows(files, "awr", settings.zip_prefix)
+        plan_day = packager.plan_windows(files, "day", settings.zip_prefix, require_awr=settings.require_awr)
+        plan_awr = packager.plan_windows(files, "awr", settings.zip_prefix, require_awr=settings.require_awr)
+        if settings.require_logs:
+            plan_day = [w for w in plan_day if packager.has_log_candidates(w, files)]
+            plan_awr = [w for w in plan_awr if packager.has_log_candidates(w, files)]
         return templates.TemplateResponse(request, "index.html", {
             "files": files, "counts": counts, "categories": detect.CATEGORIES,
             "outputs": outputs(), "job": jobs.state, "msg": msg, "level": level,
             "plan_day": plan_day, "plan_awr": plan_awr, "roots": roots(),
             "warnings": [c for c in getattr(app.state, "selfcheck", []) if not c["ok"]],
+            "auto_package": settings.auto_package, "require_awr": settings.require_awr,
+            "day_packages": settings.day_packages, "require_logs": settings.require_logs,
+            "has_awr": any(f.category == detect.AWR and packager.is_awr_report(f) for f in files),
+            "summary": {
+                "AWR-Reports": sum(1 for f in files if f.category == detect.AWR and packager.is_awr_report(f)),
+                "weitere Oracle-Reports": sum(1 for f in files if f.category == detect.AWR and not packager.is_awr_report(f)),
+                "Access-Logs": counts[detect.ACCESS], "Server-Logs": counts[detect.SERVER],
+                "sonstige Dateien mit Datum": sum(1 for f in files if f.category == detect.UNKNOWN and f.days),
+            },
         })
 
     @app.get("/api/selfcheck")
@@ -154,7 +273,7 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
 
     # --------------------------------------------------------------- Sammeln
     @app.put("/api/upload")
-    async def upload_stream(request: Request, name: str, source: str = ""):
+    async def upload_stream(request: Request, name: str, source: str = "", mtime: Optional[float] = None):
         """Streaming-Upload: Request-Body wird direkt auf das Volume geschrieben
         (kein Multipart, keine Zwischenkopie) - geeignet für ZIPs > 4 GB."""
         fname = safe_name(name)
@@ -175,6 +294,7 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
             part.unlink(missing_ok=True)
             raise HTTPException(400, f"{fname}: Upload unvollständig ({written} von {expected} Bytes)")
         part.replace(target)
+        set_upload_mtime(target, mtime)
         started = start_scan()
         return {"datei": f"{label}/{fname}", "bytes": written, "scan": "gestartet" if started else "eingereiht"}
 
@@ -199,6 +319,7 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
                 part.unlink(missing_ok=True)
                 raise
             part.replace(target)
+            set_upload_mtime(target, None)
             saved += 1
         start_scan()
         return back(f"{saved} Datei(en) nach inbox/{label} hochgeladen. Archive werden entpackt, Scan läuft …")
@@ -215,18 +336,18 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
         rec = catalog.get(file_id)
         if not rec:
             raise HTTPException(404)
-        if category == "auto":
-            catalog.set_override(file_id, None)
-            jobs.submit("Neuanalyse", lambda _p: catalog.reanalyse(file_id))
-            return back(f"{rec.rel}: automatische Kategorie")
-        if category not in detect.CATEGORIES:
+        if category != "auto" and category not in detect.CATEGORIES:
             raise HTTPException(400, "Unbekannte Kategorie")
-        catalog.set_override(file_id, category)
-        if category in detect.PACKABLE and category != rec.category:
-            # Zeitraum mit dem Parser der neuen Kategorie ermitteln
-            if not jobs.submit("Neuanalyse", lambda _p: catalog.reanalyse(file_id)):
-                return back(f"{rec.rel}: Kategorie → {category}. Bitte nach laufendem Job erneut scannen.", "warn")
-        return back(f"{rec.rel}: Kategorie → {category}")
+        catalog.set_override(file_id, None if category == "auto" else category)
+
+        def job(progress):
+            # Zeitraum mit dem Parser der (neuen) Kategorie ermitteln, betroffene Tage neu paketieren
+            catalog.reanalyse(file_id)
+            return repackage(catalog.last_changed_days | set(rec.days), progress)
+
+        jobs.submit_or_queue("Neuanalyse", job)
+        label = "automatische Kategorie" if category == "auto" else f"Kategorie → {category}"
+        return back(f"{rec.rel}: {label}")
 
     @app.post("/files/{file_id}/delete")
     def delete_file(file_id: int):
@@ -237,6 +358,8 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
             raise HTTPException(403, "Nur hochgeladene Dateien (inbox) können gelöscht werden")
         rec.path.unlink(missing_ok=True)
         catalog.remove(file_id)
+        days = set(rec.days)
+        jobs.submit_or_queue("Pakete", lambda p: repackage(days, p))
         return back(f"{rec.rel} gelöscht")
 
     # ------------------------------------------------------------- Paketieren
@@ -253,11 +376,14 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
 
         def run(progress):
             records = catalog.all()
-            windows = packager.plan_windows(records, mode, settings.zip_prefix, margin, dfrom, dto)
+            windows = packager.plan_windows(records, mode, settings.zip_prefix, margin, dfrom, dto,
+                                            require_awr=settings.require_awr)
             if not windows:
                 return {"zips": [], "hinweis": "Keine passenden Zeitfenster gefunden"}
-            return {"zips": packager.build(records, windows, settings.output_dir,
-                                           settings.work_dir, mode, progress)}
+            zips = packager.build(records, windows, settings.output_dir, settings.work_dir, mode, progress,
+                                  require_logs=settings.require_logs,
+                               other_max_bytes=settings.other_max_mb * 1024 * 1024)
+            return {"zips": zips} if zips else {"zips": [], "hinweis": "Keine Log-Zeilen in den AWR-Zeiträumen – kein Paket"}
 
         if not jobs.submit("Paketierung", run):
             return back("Es läuft bereits ein Job.", "warn")
@@ -289,11 +415,45 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
             n += 1
         return back(f"{n} Paket(e) gelöscht")
 
+    # ---------------------------------------------------------- Zurücksetzen
+    def _empty_dir(d: Path) -> int:
+        """Inhalt eines Datenverzeichnisses löschen (nur unterhalb von BORA_DATA_DIR)."""
+        if not _is_within(settings.data_dir, d) or d.resolve() == settings.data_dir.resolve():
+            raise RuntimeError(f"Unzulässiges Verzeichnis: {d}")
+        n = 0
+        for child in d.iterdir():
+            if child.is_dir() and not child.is_symlink():
+                n += sum(1 for p in child.rglob("*") if p.is_file())
+                shutil.rmtree(child)
+            else:
+                child.unlink()
+                n += 1
+        return n
+
+    def reset_job(progress) -> dict:
+        progress("Lösche Pakete …", 10)
+        pakete = _empty_dir(settings.output_dir)
+        progress("Lösche hochgeladene Dateien …", 40)
+        uploads = _empty_dir(settings.inbox_dir)
+        progress("Lösche Arbeitsdateien und Katalog …", 80)
+        _empty_dir(settings.work_dir)
+        catalog.clear()
+        return {"pakete_geloescht": pakete, "uploads_geloescht": uploads, "katalog": "geleert"}
+
+    @app.post("/reset")
+    def reset(confirm: str = Form("")):
+        if confirm != "RESET":
+            return back("Zurücksetzen abgebrochen – Bestätigung fehlt.", "warn")
+        started = jobs.submit_or_queue("Zurücksetzen", reset_job)
+        return back("Alles wird zurückgesetzt …" if started else
+                    "Zurücksetzen wird nach dem laufenden Job ausgeführt.")
+
     # -------------------------------------------------------------------- API
     @app.get("/api/status")
     def api_status():
         s = jobs.state
-        return {"name": s.name, "running": s.running, "message": s.message, "started": s.started,
+        return {"name": s.name, "running": s.running, "message": s.message, "percent": s.percent,
+                "started": s.started,
                 "finished": s.finished, "error": s.error, "result": s.result}
 
     @app.get("/api/files")

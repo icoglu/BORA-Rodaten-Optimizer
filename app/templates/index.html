@@ -19,6 +19,12 @@
 <section id="job" class="card job {% if job.running %}running{% elif job.error %}error{% endif %}"
          data-running="{{ 'true' if job.running else 'false' }}">
   <strong>Status:</strong> <span id="job-msg">{{ job.message }}</span>
+  {% if job.running %}
+  <div class="prow job-meter">
+    <div class="meter{% if job.percent is none %} indet{% endif %}" role="progressbar" aria-label="{{ job.name }}"><span style="width: {{ job.percent or 0 }}%"></span></div>
+    <span class="ppct" id="job-pct">{% if job.percent is not none %}{{ job.percent|round|int }} %{% endif %}</span>
+  </div>
+  {% endif %}
   {% if job.error %}<div class="err">{{ job.error }}</div>{% endif %}
   {% if job.result and not job.running %}
     {% if job.result.zips is defined %}
@@ -35,11 +41,22 @@
   <form id="upload-form" action="/upload" method="post" enctype="multipart/form-data">
     <label>Quelle / Host <input name="source" placeholder="z.B. wls-prod-01 (optional)" pattern="[A-Za-z0-9._\-]*"></label>
     <label>Dateien <input type="file" name="files" multiple required></label>
-    <p class="muted">access.log*, server*.log* (auch rotiert / .gz), Oracle-Reports als HTML/Text (AWR, ASH, ADDM, AWR-Global/Compare, Statspack) oder Archive (.zip auch &gt; 4 GB, .tar.gz) – werden automatisch entpackt.</p>
+    <p class="muted">access.log*, server*.log* (auch rotiert / .gz), Oracle-Reports als HTML/Text (AWR, ASH, ADDM, AWR-Global/Compare, Statspack) oder Archive (.zip auch &gt; 4 GB, .tar.gz) – werden automatisch entpackt. <strong>EAR/WAR/JAR/RAR werden nicht entpackt</strong> und ignoriert.</p>
     <button type="submit">Hochladen &amp; analysieren</button>
-    <div id="upload-progress" hidden>
-      <progress max="100" value="0"></progress>
-      <span class="small" id="upload-text"></span>
+    <div id="upload-panel" class="progress-panel" hidden aria-live="polite">
+      <div class="prow total">
+        <span class="pname">Gesamt</span>
+        <div class="meter" role="progressbar" aria-label="Upload gesamt" aria-valuemin="0" aria-valuemax="100"><span></span></div>
+        <span class="ppct">0 %</span>
+        <span class="pinfo small muted"></span>
+      </div>
+      <div id="upload-files"></div>
+      <div class="prow phase" id="upload-phase" hidden>
+        <span class="pname">Verarbeitung</span>
+        <div class="meter indet" role="progressbar" aria-label="Verarbeitung"><span></span></div>
+        <span class="ppct"></span>
+        <span class="pinfo small muted"></span>
+      </div>
     </div>
   </form>
   <form action="/scan" method="post" class="inline">
@@ -51,14 +68,35 @@
 </section>
 
 <section class="card">
-  <h2>3 · Pakete erstellen</h2>
+  <h2>2 · Pakete erstellen</h2>
+  {% if auto_package %}
+  <div class="auto-note">
+    <strong>Automatisch nach jedem Upload/Einlesen:</strong>
+    <ol>
+      <li><strong>Regel 1 – AWR-Zeitraum:</strong> Für jeden AWR-Report wird der Aufzeichnungszeitraum
+        (Begin/End Snap) erkannt; dazu werden die Log-Zeilen dieses Zeitraums und überschneidende
+        Oracle-Reports (ASH, ADDM, Statspack) zusammengeführt → <code>BORA_JJJJ-MM-TT_HHMM-HHMM.zip</code>.
+        Aus den Log-Dateien werden <strong>nur die Zeilen zwischen Begin und End Snap Time</strong> übernommen – nicht die ganzen Dateien.</li>
+      {% if day_packages %}<li><strong>Regel 2 – Tag:</strong> alle Dateien pro Tag → <code>BORA_JJJJ-MM-TT.zip</code>{% if require_awr %} – nur für Tage mit AWR-Report{% endif %}</li>{% endif %}
+      {% if require_awr %}<li><strong>Ohne AWR-Report kein Paket.</strong></li>{% endif %}
+      {% if require_logs %}<li><strong>Paket nur, wenn zum AWR-Report ein Access- oder Server-Log mit Zeilen in der Snap Time vorhanden ist.</strong></li>{% endif %}
+    </ol>
+    Nur geänderte Zeiträume/Tage werden neu erstellt.
+  </div>
+  {% if require_awr and not has_awr %}
+  <div class="flash warn">Keine AWR-Reports gefunden – es werden keine Pakete erstellt.</div>
+  {% endif %}
+  {% endif %}
+  <p class="summary"><strong>Erkannt:</strong>
+    {% for k, v in summary.items() %}{% if v or k in ("AWR-Reports", "Access-Logs", "Server-Logs") %}<span class="{% if k == 'AWR-Reports' and not v %}err{% endif %}">{{ v }} {{ k }}</span>{% if not loop.last %} · {% endif %}{% endif %}{% endfor %}
+  </p>
   <form action="/build" method="post">
     <fieldset>
-      <legend>Zeitrahmen-Regel</legend>
-      <label class="radio"><input type="radio" name="mode" value="day" checked>
-        Pro Kalendertag – <code>BORA_JJJJ-MM-TT.zip</code> ({{ plan_day|length }} Pakete)</label>
-      <label class="radio"><input type="radio" name="mode" value="awr">
-        Pro AWR-Snapshot-Intervall – <code>BORA_JJJJ-MM-TT_HHMM-HHMM.zip</code> ({{ plan_awr|length }} Pakete)</label>
+      <legend>Manuell neu erstellen</legend>
+      <label class="radio"><input type="radio" name="mode" value="awr" checked>
+        Regel 1 · Pro AWR-Aufzeichnungszeitraum – <code>BORA_JJJJ-MM-TT_HHMM-HHMM.zip</code> ({{ plan_awr|length }} Pakete)</label>
+      <label class="radio"><input type="radio" name="mode" value="day">
+        Pro Kalendertag (ganze Tage) – <code>BORA_JJJJ-MM-TT.zip</code> ({{ plan_day|length }} Pakete)</label>
     </fieldset>
     <div class="row">
       <label>von <input type="date" name="date_from"></label>
@@ -80,57 +118,10 @@
 </div>
 
 <section class="card">
-  <h2>2 · Katalog &amp; Kategorisierung</h2>
-  <div class="chips">
-    {% for c in categories %}<span class="chip cat-{{ c }}">{{ c }}: {{ counts[c] }}</span>{% endfor %}
-  </div>
-  <div class="scroll">
-  <table>
-    <thead><tr><th>Kategorie</th><th>Datei</th><th>Quelle</th><th class="num">Größe</th>
-      <th>von</th><th>bis</th><th>Tage</th><th>Info</th><th></th></tr></thead>
-    <tbody>
-    {% for f in files %}
-      <tr class="{% if f.error %}has-error{% endif %}">
-        <td>
-          <form action="/files/{{ f.id }}/category" method="post" class="inline">
-            <select name="category" class="cat-{{ f.category }}" onchange="this.form.submit()">
-              <option value="auto">auto ({{ f.detected }})</option>
-              {% for c in categories %}<option value="{{ c }}" {% if f.override == c %}selected{% endif %}>{{ c }}</option>{% endfor %}
-            </select>
-          </form>
-        </td>
-        <td class="path">{{ f.rel }}</td>
-        <td>{{ f.root }}</td>
-        <td class="num">{{ f.size|size }}</td>
-        <td class="ts">{{ f.first|dt }}</td>
-        <td class="ts">{{ f.last|dt }}</td>
-        <td>{{ f.days|length }}</td>
-        <td class="small">
-          {% if f.error %}<span class="err">{{ f.error }}</span>
-          {% elif f.category == 'awr' %}{{ f.info.report_type or 'Oracle-Report' }}{% if f.info.begin_snap %} · Snap {{ f.info.begin_snap }}–{{ f.info.end_snap }}{% endif %}{% if f.info.time_source == 'fallback' %} · <span class="err" title="Zeitraum aus Zeitangaben im Report geschätzt">Zeit geschätzt</span>{% endif %}{% if f.info.db_name %} · {{ f.info.db_name }}{% endif %}{% if f.info.instance %}/{{ f.info.instance }}{% endif %}
-          {% elif f.info.lines is defined %}{{ f.info.lines }} Zeile{{ "n" if f.info.lines != 1 }}{% endif %}
-        </td>
-        <td>
-          {% if f.deletable %}
-          <form action="/files/{{ f.id }}/delete" method="post" class="inline" onsubmit="return confirm('Datei löschen?')">
-            <button class="icon" title="löschen">✕</button>
-          </form>
-          {% endif %}
-        </td>
-      </tr>
-    {% else %}
-      <tr><td colspan="9" class="muted">Noch keine Dateien – bitte hochladen oder Quellverzeichnis mounten.</td></tr>
-    {% endfor %}
-    </tbody>
-  </table>
-  </div>
-</section>
-
-<section class="card">
-  <h2>4 · ZIP-Pakete</h2>
+  <h2>3 · ZIP-Pakete</h2>
   {% if outputs %}
   <table>
-    <thead><tr><th>Paket</th><th class="num">Größe</th><th>erstellt</th><th></th></tr></thead>
+    <thead><tr><th>Paket</th><th class="num">Größe</th><th>Zeitstempel</th><th></th></tr></thead>
     <tbody>
     {% for o in outputs %}
       <tr>
@@ -154,45 +145,157 @@
   {% endif %}
 </section>
 
+<section class="card danger-zone">
+  <h2>4 · Zurücksetzen</h2>
+  <p>Löscht <strong>alle hochgeladenen Dateien, alle ZIP-Pakete und den Katalog</strong> (inkl. manueller Kategorien).
+    Eingebundene Log-Verzeichnisse (<code>logs</code>) bleiben unberührt und werden beim nächsten
+    „Verzeichnisse neu einlesen“ wieder erfasst.</p>
+  <form action="/reset" method="post" class="reset-form">
+    <input type="hidden" name="confirm" value="">
+    <button type="submit" class="danger" {% if job.running %}disabled{% endif %}>Alles zurücksetzen und löschen</button>
+  </form>
+</section>
+
 </main>
 <script>
-// Streaming-Upload: jede Datei als roher Request-Body (PUT) - ohne Multipart,
-// mit Fortschritt; geeignet für Archive > 4 GB.
+document.querySelectorAll('.reset-form').forEach(f => f.addEventListener('submit', ev => {
+  const ok = confirm('Wirklich ALLES zurücksetzen?\n\nGelöscht werden:\n• alle hochgeladenen Dateien\n• alle ZIP-Pakete\n• der Katalog inkl. Kategorien\n\nDas kann nicht rückgängig gemacht werden.');
+  if (!ok) { ev.preventDefault(); return; }
+  f.querySelector('input[name=confirm]').value = 'RESET';
+}));
+
+// Streaming-Upload: jede Datei als roher Request-Body (PUT) - ohne Multipart;
+// Fortschritt als Balkendiagramm (gesamt + je Datei), danach Verarbeitung.
+function setMeter(meter, pct) {
+  const known = pct !== null && pct !== undefined;
+  const bar = meter.firstElementChild;
+  if (known && meter.classList.contains('indet')) {
+    // Wechsel von "unbestimmt" auf Prozent: ohne Übergangsanimation springen
+    bar.style.transition = 'none';
+    meter.classList.remove('indet');
+    bar.style.width = pct + '%';
+    void bar.offsetWidth;
+    bar.style.transition = '';
+    return;
+  }
+  meter.classList.toggle('indet', !known);
+  bar.style.width = known ? pct + '%' : '';
+  if (known) meter.setAttribute('aria-valuenow', Math.round(pct)); else meter.removeAttribute('aria-valuenow');
+}
+const fmtSize = n => n >= 1073741824 ? (n / 1073741824).toFixed(2) + ' GB'
+  : n >= 1048576 ? (n / 1048576).toFixed(1) + ' MB' : (n / 1024).toFixed(0) + ' KB';
+const fmtTime = s => !isFinite(s) ? '' : s >= 3600 ? `${Math.floor(s / 3600)} h ${Math.round(s % 3600 / 60)} min`
+  : s >= 60 ? `${Math.floor(s / 60)} min ${Math.round(s % 60)} s` : `${Math.max(1, Math.round(s))} s`;
+
 (function () {
   const form = document.getElementById('upload-form');
-  const box = document.getElementById('upload-progress');
-  const bar = box.querySelector('progress');
-  const text = document.getElementById('upload-text');
-  const fmt = n => n >= 1073741824 ? (n / 1073741824).toFixed(2) + ' GB' : (n / 1048576).toFixed(1) + ' MB';
-  function put(file, source, idx, total) {
+  const panel = document.getElementById('upload-panel');
+  const list = document.getElementById('upload-files');
+  const totalRow = panel.querySelector('.prow.total');
+  const phase = document.getElementById('upload-phase');
+
+  function fileRow(file) {
+    const row = document.createElement('div');
+    row.className = 'prow';
+    row.innerHTML = '<span class="pname"></span><div class="meter" role="progressbar" aria-valuemin="0" aria-valuemax="100"><span></span></div>'
+      + '<span class="ppct">0 %</span><span class="pinfo small muted">wartet</span>';
+    row.querySelector('.pname').textContent = file.name;
+    row.querySelector('.pname').title = file.name;
+    row.querySelector('.meter').setAttribute('aria-label', file.name);
+    list.appendChild(row);
+    return row;
+  }
+
+  function put(file, source, row, onBytes) {
     return new Promise((resolve, reject) => {
       const xhr = new XMLHttpRequest();
-      const q = new URLSearchParams({ name: file.name, source: source });
-      xhr.open('PUT', '/api/upload?' + q.toString());
+      xhr.open('PUT', '/api/upload?' + new URLSearchParams({ name: file.name, source: source, mtime: file.lastModified || 0 }));
       xhr.setRequestHeader('Content-Type', 'application/octet-stream');
+      row.classList.add('active');
+      row.querySelector('.pinfo').textContent = 'läuft · ' + fmtSize(file.size);
       xhr.upload.onprogress = e => {
-        if (!e.lengthComputable) return;
-        bar.value = Math.floor(e.loaded / e.total * 100);
-        text.textContent = `Datei ${idx}/${total}: ${file.name} – ${fmt(e.loaded)} / ${fmt(e.total)}`;
+        const loaded = e.lengthComputable ? e.loaded : 0;
+        const pct = file.size ? loaded / file.size * 100 : 100;
+        setMeter(row.querySelector('.meter'), pct);
+        row.querySelector('.ppct').textContent = Math.floor(pct) + ' %';
+        onBytes(loaded);
       };
-      xhr.onload = () => xhr.status < 300 ? resolve(JSON.parse(xhr.responseText))
-        : reject(new Error(file.name + ': HTTP ' + xhr.status + ' ' + xhr.responseText));
-      xhr.onerror = () => reject(new Error(file.name + ': Netzwerkfehler'));
+      xhr.onload = () => {
+        row.classList.remove('active');
+        if (xhr.status < 300) {
+          setMeter(row.querySelector('.meter'), 100);
+          row.querySelector('.ppct').textContent = '100 %';
+          row.classList.add('done');
+          row.querySelector('.pinfo').textContent = '✓ fertig · ' + fmtSize(file.size);
+          onBytes(file.size);
+          resolve();
+        } else {
+          row.classList.add('failed');
+          row.querySelector('.pinfo').textContent = '✗ Fehler (HTTP ' + xhr.status + ')';
+          reject(new Error(file.name + ': HTTP ' + xhr.status + ' ' + xhr.responseText));
+        }
+      };
+      xhr.onerror = () => {
+        row.classList.remove('active'); row.classList.add('failed');
+        row.querySelector('.pinfo').textContent = '✗ Netzwerkfehler';
+        reject(new Error(file.name + ': Netzwerkfehler'));
+      };
       xhr.send(file);
     });
   }
+
+  function watchProcessing(msg) {
+    phase.hidden = false;
+    const meter = phase.querySelector('.meter');
+    const timer = setInterval(async () => {
+      try {
+        const s = await (await fetch('/api/status')).json();
+        setMeter(meter, s.running ? s.percent : 100);
+        phase.querySelector('.ppct').textContent = s.percent !== null ? Math.round(s.running ? s.percent : 100) + ' %' : '';
+        phase.querySelector('.pinfo').textContent = s.message;
+        if (!s.running) {
+          clearInterval(timer);
+          phase.classList.add(s.error ? 'failed' : 'done');
+          setTimeout(() => { location.href = '/?' + new URLSearchParams(s.error ? { msg: s.error, level: 'error' } : { msg }); }, 800);
+        }
+      } catch (e) { /* weiter versuchen */ }
+    }, 700);
+  }
+
   form.addEventListener('submit', async ev => {
     ev.preventDefault();
     const files = [...form.querySelector('input[type=file]').files];
+    if (!files.length) return;
     const source = form.querySelector('input[name=source]').value
       || 'upload-' + new Date().toISOString().slice(0, 19).replace(/[-:]/g, '').replace('T', '-');
-    form.querySelector('button').disabled = true;
-    box.hidden = false;
+    form.querySelector('button[type=submit]').disabled = true;
+    list.textContent = '';
+    panel.hidden = false;
+    const rows = files.map(fileRow);
+    const totalBytes = files.reduce((a, f) => a + f.size, 0) || 1;
+    let doneBytes = 0;
+    const t0 = performance.now();
+    const updateTotal = current => {
+      const sent = doneBytes + current;
+      const pct = sent / totalBytes * 100;
+      const secs = (performance.now() - t0) / 1000;
+      const rate = secs > 0.5 ? sent / secs : 0;
+      setMeter(totalRow.querySelector('.meter'), pct);
+      totalRow.querySelector('.ppct').textContent = Math.floor(pct) + ' %';
+      totalRow.querySelector('.pinfo').textContent = `${fmtSize(sent)} / ${fmtSize(totalBytes)}`
+        + (rate ? ` · ${fmtSize(rate)}/s · noch ${fmtTime((totalBytes - sent) / rate)}` : '');
+    };
     try {
-      for (let i = 0; i < files.length; i++) await put(files[i], source, i + 1, files.length);
-      location.href = '/?' + new URLSearchParams({ msg: `${files.length} Datei(en) nach inbox/${source} hochgeladen. Archive werden entpackt, Scan läuft …` });
+      for (let i = 0; i < files.length; i++) {
+        await put(files[i], source, rows[i], updateTotal);
+        doneBytes += files[i].size;
+      }
+      updateTotal(0);
+      totalRow.classList.add('done');
+      watchProcessing(`${files.length} Datei(en) nach inbox/${source} hochgeladen und verarbeitet.`);
     } catch (e) {
-      location.href = '/?' + new URLSearchParams({ msg: e.message, level: 'error' });
+      totalRow.classList.add('failed');
+      setTimeout(() => { location.href = '/?' + new URLSearchParams({ msg: e.message, level: 'error' }); }, 1500);
     }
   });
 })();
@@ -204,6 +307,8 @@
     try {
       const s = await (await fetch('/api/status')).json();
       document.getElementById('job-msg').textContent = s.message;
+      const m = job.querySelector('.meter');
+      if (m) { setMeter(m, s.percent); document.getElementById('job-pct').textContent = s.percent !== null ? Math.round(s.percent) + ' %' : ''; }
       if (!s.running) { clearInterval(timer); location.href = '/'; }
     } catch (e) { /* Netzwerkfehler: weiter versuchen */ }
   }, 1500);

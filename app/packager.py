@@ -39,6 +39,14 @@ class Window:
     start: datetime
     end: datetime  # exklusiv
     awr: list[FileRecord] = field(default_factory=list)
+    # sonstige Dateien (weder Log noch Oracle-Report) mit passendem Datum - werden ganz übernommen
+    other: list[FileRecord] = field(default_factory=list)
+    # Einheitlicher Zeitstempel für das ZIP und alle Einträge (Tag 00:00 bzw. AWR-Beginn ohne Puffer)
+    stamp: Optional[datetime] = None
+
+    @property
+    def timestamp(self) -> datetime:
+        return self.stamp or self.start
 
     def contains(self, ts: datetime) -> bool:
         return self.start <= ts < self.end
@@ -65,10 +73,79 @@ def awr_periods(rec: FileRecord) -> list[tuple[datetime, datetime]]:
     return periods
 
 
+def is_awr_report(rec: FileRecord) -> bool:
+    """Echter AWR-Report (auch RAC/Global/Compare) - im Gegensatz zu ASH/ADDM/Statspack."""
+    return (rec.info.get("report_type") or "AWR").upper().startswith("AWR")
+
+
+def _preference(r: FileRecord) -> tuple:
+    """Welche von mehreren gleichwertigen Dateien behalten wird: HTML vor Text,
+    Upload (inbox) vor eingebundener Quelle, dann die zuerst erfasste (Original)."""
+    html = r.rel.lower().endswith((".html", ".htm"))
+    return (not html, r.root != "inbox", r.id)
+
+
+def deduplicate(records: list[FileRecord]) -> tuple[list[FileRecord], dict[int, list[FileRecord]]]:
+    """Redundanzen entfernen:
+    1. identischer Inhalt (SHA-256) -> nur eine Datei,
+    2. derselbe AWR-/Oracle-Report in mehreren Formaten (gleiche DB, Instanz,
+       Report-Typ und Snap-IDs, z.B. .html und .txt) -> HTML behalten.
+    Liefert (behaltene Datensätze, {id_behalten: [ausgelassene Duplikate]})."""
+    dups: dict[int, list[FileRecord]] = {}
+    keep: dict[tuple, FileRecord] = {}
+
+    def key_of(r: FileRecord) -> Optional[tuple]:
+        i = r.info
+        if r.category == detect.AWR and i.get("begin_snap") is not None and i.get("end_snap") is not None:
+            return ("awr", i.get("report_type"), i.get("db_name"), i.get("instance"), i.get("begin_snap"),
+                    i.get("end_snap"), tuple(map(tuple, i.get("periods") or [])))
+        if i.get("sha256"):
+            return ("sha", r.category, i["sha256"])
+        return None
+
+    out: list[FileRecord] = []
+    for r in sorted(records, key=_preference):
+        k = key_of(r) if r.category in detect.PACKABLE or r.category == detect.UNKNOWN else None
+        if k is None:
+            out.append(r)
+            continue
+        if k in keep:
+            dups.setdefault(keep[k].id, []).append(r)
+            continue
+        # gleicher Inhalt wie ein bereits behaltener Report (anderer Schlüsseltyp)?
+        sha_key = ("sha", r.category, r.info.get("sha256"))
+        if k[0] == "awr" and r.info.get("sha256") and sha_key in keep:
+            dups.setdefault(keep[sha_key].id, []).append(r)
+            continue
+        keep[k] = r
+        if k[0] == "awr" and r.info.get("sha256"):
+            keep[sha_key] = r
+        out.append(r)
+    return sorted(out, key=lambda r: r.id), dups
+
+
+def content_fits(w: Window, rec: FileRecord) -> bool:
+    """Inhaltsprüfung: liegt mindestens ein belegter Zeitabschnitt der Datei im Zeitraum?"""
+    intervals = rec.info.get("intervals")
+    if intervals:
+        return any(w.overlaps(datetime.fromisoformat(b), datetime.fromisoformat(e)) for b, e in intervals)
+    return w.overlaps(rec.first, rec.last)
+
+
+def has_log_candidates(w: Window, records: list[FileRecord]) -> bool:
+    """Schnelle Vorab-Prüfung (Katalog): überschneidet sich eine Log-Datei mit dem Fenster?
+    Die genaue Prüfung auf Zeilenebene erfolgt in build()."""
+    return any(r.category in detect.LOG_CATEGORIES and w.overlaps(r.first, r.last) for r in records)
+
+
 def plan_windows(records: list[FileRecord], mode: str, prefix: str = "BORA", margin_min: int = 0,
-                 date_from: Optional[date] = None, date_to: Optional[date] = None) -> list[Window]:
+                 date_from: Optional[date] = None, date_to: Optional[date] = None,
+                 require_awr: bool = True) -> list[Window]:
+    """Zeitfenster planen. ``require_awr``: ohne AWR-Report kein Paket - Tages-Pakete
+    nur für Tage mit AWR-Report, andere Oracle-Reports nur zusammen mit einem AWR."""
     if mode not in MODES:
         raise ValueError(f"Unbekannter Modus: {mode}")
+    records, _ = deduplicate(records)
     usable = [r for r in records if r.category in detect.PACKABLE and r.first and r.last]
     awrs = [r for r in usable if r.category == detect.AWR]
     windows: dict[str, Window] = {}
@@ -77,6 +154,8 @@ def plan_windows(records: list[FileRecord], mode: str, prefix: str = "BORA", mar
         days: set[str] = set()
         for r in usable:
             days.update(r.days or detect.days_between(r.first, r.last))  # type: ignore[arg-type]
+        if require_awr:
+            days &= {d for a in awrs if is_awr_report(a) for b, e in awr_periods(a) for d in detect.days_between(b, e)}
         for d in sorted(days):
             day = date.fromisoformat(d)
             if not _in_range(day, date_from, date_to):
@@ -86,20 +165,46 @@ def plan_windows(records: list[FileRecord], mode: str, prefix: str = "BORA", mar
         for w in windows.values():
             w.awr = [a for a in awrs if any(w.overlaps(b, e) for b, e in awr_periods(a))]
     else:
+        # Regel 1: Jeder AWR-Report (HTML/Text) bestimmt einen Aufzeichnungszeitraum.
+        # Dazu werden die Log-Zeilen dieses Zeitraums und alle anderen Oracle-Reports
+        # (ASH, ADDM, Statspack), die sich damit überschneiden, zusammengeführt.
         margin = timedelta(minutes=max(margin_min, 0))
-        for a in sorted(awrs, key=lambda r: r.first):  # type: ignore[arg-type,return-value]
-            for begin, end in awr_periods(a):
-                if not (_in_range(begin.date(), date_from, date_to) or _in_range(end.date(), date_from, date_to)):
-                    continue
-                name = f"{prefix}_{_fmt_range(begin, end)}"
-                start, stop = begin - margin, end + margin + timedelta(seconds=1)
-                w = windows.get(name)
-                if w is None:
-                    windows[name] = Window(name, start, stop, [a])
-                else:  # z.B. RAC: mehrere Instanzen im selben Snapshot-Intervall
-                    w.start, w.end = min(w.start, start), max(w.end, stop)
-                    if a not in w.awr:
-                        w.awr.append(a)
+        primary = [r for r in awrs if is_awr_report(r)]
+        secondary = [r for r in awrs if not is_awr_report(r)]
+
+        def add_window(rep: FileRecord, begin: datetime, end: datetime) -> None:
+            name = f"{prefix}_{_fmt_range(begin, end)}"
+            start, stop = begin - margin, end + margin + timedelta(seconds=1)
+            w = windows.get(name)
+            if w is None:
+                windows[name] = Window(name, start, stop, [rep], stamp=begin.replace(second=0))
+            else:  # z.B. RAC: mehrere Instanzen im selben Snapshot-Intervall
+                w.start, w.end = min(w.start, start), max(w.end, stop)
+                w.stamp = min(w.timestamp, begin.replace(second=0))
+                if rep not in w.awr:
+                    w.awr.append(rep)
+
+        def wanted(begin: datetime, end: datetime) -> bool:
+            return _in_range(begin.date(), date_from, date_to) or _in_range(end.date(), date_from, date_to)
+
+        for rep in sorted(primary, key=lambda r: r.first):  # type: ignore[arg-type,return-value]
+            for begin, end in awr_periods(rep):
+                if wanted(begin, end):
+                    add_window(rep, begin, end)
+        awr_windows = list(windows.values())
+        for rep in sorted(secondary, key=lambda r: r.first):  # type: ignore[arg-type,return-value]
+            for begin, end in awr_periods(rep):
+                hits = [w for w in awr_windows if w.overlaps(begin, end)]
+                for w in hits:
+                    if rep not in w.awr:
+                        w.awr.append(rep)
+                if not hits and not require_awr and wanted(begin, end):  # nur ohne AWR-Pflicht: eigenes Paket
+                    add_window(rep, begin, end)
+    # Sonstige Dateien: immer dabei, wenn ihr Zeitrahmen in den Zeitraum des Pakets fällt
+    # (Inhalt von-bis, Zeitpunkt aus Name/Dateizeit; nur Datum bekannt -> ganzer Tag)
+    others = [r for r in records if r.category == detect.UNKNOWN and r.first and r.last]
+    for w in windows.values():
+        w.other = [r for r in others if content_fits(w, r)]
     return sorted(windows.values(), key=lambda w: (w.start, w.name))
 
 
@@ -130,7 +235,7 @@ def _slice_log(rec: FileRecord, windows: list[Window], by_day: Optional[dict[str
     candidates = [i for i, w in enumerate(windows) if w.overlaps(rec.first, rec.last)]
     if not candidates:
         return slices
-    parser = LineTimestampParser()
+    parser = LineTimestampParser(whole_line=rec.info.get("ts_mode") == "ganze Zeile")
     pending: list[bytes] = []
     current: Optional[datetime] = None
     targets: list[int] = []
@@ -180,9 +285,13 @@ def _slice_log(rec: FileRecord, windows: list[Window], by_day: Optional[dict[str
 
 
 def build(records: list[FileRecord], windows: list[Window], out_dir: Path, work_dir: Path,
-          mode: str, progress: Callable[[str], None] = lambda _m: None) -> list[dict]:
+          mode: str, progress: Callable[..., None] = lambda *_a: None,
+          require_logs: bool = True, other_max_bytes: int = 0) -> list[dict]:
+    """ZIPs erzeugen. ``require_logs``: Zeitfenster ohne passende Log-Zeilen
+    (z.B. AWR-Report ohne Logs) erhalten kein Paket."""
     out_dir.mkdir(parents=True, exist_ok=True)
     work_dir.mkdir(parents=True, exist_ok=True)
+    records, dups = deduplicate(records)
     logs = [r for r in records if r.category in detect.LOG_CATEGORIES and r.first and r.last]
     by_day = {w.start.date().isoformat(): i for i, w in enumerate(windows)} if mode == "day" else None
     results: list[dict] = []
@@ -192,28 +301,50 @@ def build(records: list[FileRecord], windows: list[Window], out_dir: Path, work_
         # 1) Logs zerschneiden - jede Datei wird genau einmal gelesen
         per_window: dict[int, list[tuple[FileRecord, _Slice]]] = {}
         for n, rec in enumerate(logs, 1):
-            progress(f"Log {n}/{len(logs)}: {rec.root}/{rec.rel}")
+            progress(f"Zerlege Log {n}/{len(logs)}: {rec.root}/{rec.rel}", (n - 1) * 80 / max(len(logs), 1))
             for idx, sl in _slice_log(rec, windows, by_day, tmp).items():
                 per_window.setdefault(idx, []).append((rec, sl))
 
         # 2) Ein ZIP je Zeitfenster
         for idx, w in enumerate(windows):
             slices = per_window.get(idx, [])
-            if not slices and not w.awr:
-                continue
-            progress(f"Erzeuge {w.name}.zip ({idx + 1}/{len(windows)})")
-            results.append(_write_zip(w, slices, out_dir, mode))
+            if not slices and (require_logs or not w.awr):
+                continue  # keine Log-Zeilen im Zeitraum -> kein Paket
+            progress(f"Erzeuge {w.name}.zip ({idx + 1}/{len(windows)})", 80 + idx * 20 / max(len(windows), 1))
+            results.append(_write_zip(w, slices, out_dir, mode, dups, other_max_bytes))
             shutil.rmtree(tmp / str(idx), ignore_errors=True)
     return results
 
 
-def _write_zip(w: Window, slices: list[tuple[FileRecord, _Slice]], out_dir: Path, mode: str) -> dict:
+def _zip_time(ts: datetime) -> tuple[int, int, int, int, int, int]:
+    ts = max(ts, datetime(1980, 1, 1))  # ZIP/DOS-Zeit beginnt 1980
+    return (ts.year, ts.month, ts.day, ts.hour, ts.minute, ts.second - ts.second % 2)
+
+
+def _add(zf: zipfile.ZipFile, src: Path, arcname: str, stamp: datetime) -> None:
+    """Datei mit vorgegebenem Zeitstempel ins ZIP streamen (statt Datei-mtime)."""
+    info = zipfile.ZipInfo(arcname, date_time=_zip_time(stamp))
+    info.compress_type = zipfile.ZIP_DEFLATED
+    info.external_attr = 0o644 << 16
+    with open(src, "rb") as fh, zf.open(info, "w", force_zip64=True) as out:
+        shutil.copyfileobj(fh, out, 4 * 1024 * 1024)
+
+
+def _write_zip(w: Window, slices: list[tuple[FileRecord, _Slice]], out_dir: Path, mode: str,
+               dups: Optional[dict[int, list[FileRecord]]] = None, other_max_bytes: int = 0) -> dict:
+    dups = dups or {}
+
+    def dup_info(rec: FileRecord) -> dict:
+        d = dups.get(rec.id)
+        return {"duplikate_ausgelassen": [f"{x.root}/{x.rel}" for x in d]} if d else {}
+
     target = out_dir / f"{w.name}.zip"
     part = target.with_suffix(".zip.part")
     manifest: dict = {
         "paket": w.name,
         "modus": mode,
         "zeitraum": {"von": w.start.isoformat(), "bis_exklusiv": w.end.isoformat()},
+        "zeitstempel": w.timestamp.isoformat(),
         "erstellt": datetime.now().isoformat(timespec="seconds"),
         "dateien": [],
     }
@@ -230,20 +361,43 @@ def _write_zip(w: Window, slices: list[tuple[FileRecord, _Slice]], out_dir: Path
     with zipfile.ZipFile(part, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=6, allowZip64=True) as zf:
         for a in sorted(w.awr, key=lambda r: (r.first, r.rel)):  # type: ignore[arg-type,return-value]
             arc = unique(entry_name(a, strip_gz=False))
-            zf.write(a.path, arc)
+            _add(zf, a.path, arc, w.timestamp)
             manifest["dateien"].append({
                 "eintrag": arc, "kategorie": detect.AWR, "quelle": f"{a.root}/{a.rel}",
                 "von": a.first.isoformat() if a.first else None,
-                "bis": a.last.isoformat() if a.last else None, **{k: v for k, v in a.info.items() if v},
+                "bis": a.last.isoformat() if a.last else None,
+                **{k: v for k, v in a.info.items() if v and k != "sha256"},
+                "inhaltspruefung": "Zeitraum aus dem Report-Inhalt (Begin/End Snap bzw. Analysezeitraum)",
+                **dup_info(a),
             })
         for rec, sl in sorted(slices, key=lambda t: (t[0].category, t[0].root, t[0].rel)):
             arc = unique(entry_name(rec))
-            zf.write(sl.path, arc)
+            _add(zf, sl.path, arc, w.timestamp)
             manifest["dateien"].append({
                 "eintrag": arc, "kategorie": rec.category, "quelle": f"{rec.root}/{rec.rel}",
                 "zeilen": sl.lines, "von": sl.first.isoformat() if sl.first else None,
                 "bis": sl.last.isoformat() if sl.last else None,
+                "inhaltspruefung": f"zeilengenau: {sl.lines} von {rec.info.get('lines', '?')} Zeilen im Zeitraum "
+                                   f"(Zeitstempel: {rec.info.get('ts_mode', 'Zeilenanfang')})",
+                **dup_info(rec),
             })
-        zf.writestr("manifest.json", json.dumps(manifest, indent=2, ensure_ascii=False))
+        for o in sorted(w.other, key=lambda r: (r.root, r.rel)):
+            if other_max_bytes and o.size > other_max_bytes:
+                manifest.setdefault("zu_gross_ausgelassen", []).append(f"{o.root}/{o.rel}")
+                continue
+            arc = unique(entry_name(o, category="sonstige", strip_gz=False))
+            _add(zf, o.path, arc, w.timestamp)
+            manifest["dateien"].append({
+                "eintrag": arc, "kategorie": "sonstige", "quelle": f"{o.root}/{o.rel}",
+                "datum_aus": o.info.get("date_source"), "inhaltspruefung": o.info.get("pruefung"),
+                "inhalt_gelesen_als": o.info.get("gelesen_als"),
+                "tage": o.days, **dup_info(o),
+            })
+        minfo = zipfile.ZipInfo("manifest.json", date_time=_zip_time(w.timestamp))
+        minfo.compress_type = zipfile.ZIP_DEFLATED
+        minfo.external_attr = 0o644 << 16
+        zf.writestr(minfo, json.dumps(manifest, indent=2, ensure_ascii=False))
+    stamp = w.timestamp.timestamp()
+    os.utime(part, (stamp, stamp))  # auch das ZIP selbst trägt den Paket-Zeitstempel
     os.replace(part, target)
     return {"zip": target.name, "dateien": len(manifest["dateien"]), "groesse": target.stat().st_size}

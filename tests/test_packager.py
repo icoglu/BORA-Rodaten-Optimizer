@@ -21,7 +21,8 @@ def _read(zpath: Path) -> dict[str, bytes]:
 def test_day_mode(sample_dir: Path):
     cat = _catalog(sample_dir)
     recs = cat.all()
-    windows = packager.plan_windows(recs, "day")
+    assert [w.name for w in packager.plan_windows(recs, "day")] == ["BORA_2026-09-27"]  # nur Tage mit AWR
+    windows = packager.plan_windows(recs, "day", require_awr=False)
     assert [w.name for w in windows] == ["BORA_2026-09-26", "BORA_2026-09-27"]
     out = sample_dir / "output"
     res = packager.build(recs, windows, out, sample_dir / "work", "day")
@@ -90,3 +91,19 @@ def test_catalog_reanalyses_after_version_change(sample_dir: Path):
     stats = cat.scan({"inbox": sample_dir / "inbox"})
     assert stats["neu"] == len(cat.all())                # alles neu analysiert
     assert next(r for r in cat.all() if r.id == access.id).category == "ignore"  # manuelle Wahl bleibt
+
+
+def test_same_timestamp_for_zip_and_all_entries(sample_dir: Path):
+    """Alle Einträge (Logs, HTML-/Text-Reports, manifest) und das ZIP selbst tragen den Paket-Zeitstempel."""
+    import os
+    from datetime import datetime
+    recs = _catalog(sample_dir).all()
+    out = sample_dir / "output"
+    for mode, name, stamp in [("day", "BORA_2026-09-27.zip", (2026, 9, 27, 0, 0, 0)),
+                              ("awr", "BORA_2026-09-27_1000-1100.zip", (2026, 9, 27, 10, 0, 0))]:
+        packager.build(recs, packager.plan_windows(recs, mode, margin_min=10), out, sample_dir / "work", mode)
+        with zipfile.ZipFile(out / name) as zf:
+            infos = zf.infolist()
+            assert any(i.filename.endswith(".html") for i in infos)
+            assert {i.date_time for i in infos} == {stamp}, name
+        assert datetime.fromtimestamp(os.path.getmtime(out / name)) == datetime(*stamp)
