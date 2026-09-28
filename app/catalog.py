@@ -14,7 +14,7 @@ from . import detect
 
 # Erhöhen, wenn sich die Analyse ändert - vorhandene Einträge werden dann neu
 # analysiert (manuelle Kategorien bleiben erhalten).
-ANALYSIS_VERSION = "5"
+ANALYSIS_VERSION = "6"
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
@@ -208,14 +208,20 @@ class Catalog:
                     first, last, days = li.first, li.last, sorted(li.days)
                     info = {"sha256": li.sha256, "date_source": "inhalt"}
                 else:
+                    # Zeitrahmen der Datei: Zeitpunkt (Name mit Uhrzeit, Dateizeit) oder ganzer Tag
                     info = {"sha256": li.sha256 if li else detect.file_sha256(path)}
-                    d, src = detect.date_from_name(path.name), "dateiname"
-                    if d is None:
-                        d, src = detect.date_from_mtime(path), "dateizeit"
-                    if d:
-                        first, last = d, d + timedelta(days=1) - timedelta(seconds=1)
-                        days = [d.date().isoformat()]
-                        info["date_source"] = src
+                    named = detect.datetime_from_name(path.name)
+                    if named and named[1]:
+                        first = last = named[0]
+                        info["date_source"] = "dateiname"
+                    elif named:
+                        first, last = named[0], named[0] + timedelta(days=1) - timedelta(seconds=1)
+                        info["date_source"] = "dateiname (nur Datum)"
+                    elif (m := detect.date_from_mtime(path)) is not None:
+                        first = last = m
+                        info["date_source"] = "dateizeit"
+                    if first and last:
+                        days = detect.days_between(first, last)
             elif category in detect.LOG_CATEGORIES:
                 li = detect.scan_log(path, file_progress)
                 first, last, days = li.first, li.last, sorted(li.days)

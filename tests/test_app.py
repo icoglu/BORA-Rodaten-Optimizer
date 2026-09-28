@@ -404,7 +404,7 @@ def test_other_files_with_same_date_are_packed(tmp_path: Path):
         assert z.read("sonstige/wls01/threaddump.txt").decode() == threaddump      # ganz, unverändert
         m = {e["eintrag"]: e for e in json.loads(z.read("manifest.json"))["dateien"]}
         assert m["sonstige/wls01/threaddump.txt"]["datum_aus"] == "inhalt"
-        assert m["sonstige/wls01/gc_20260927.csv"]["datum_aus"] == "dateiname"
+        assert m["sonstige/wls01/gc_20260927.csv"]["datum_aus"] == "dateiname (nur Datum)"
         assert "sonstige Dateien mit Datum" in c.get("/").text
 
 
@@ -421,7 +421,9 @@ def test_date_from_name():
     from datetime import datetime
     from app.detect import date_from_name
     assert date_from_name("gc_20260927.log") == datetime(2026, 9, 27)
-    assert date_from_name("dump-2026-09-27_1030.txt") == datetime(2026, 9, 27)
+    assert date_from_name("dump-2026-09-27_1030.txt") == datetime(2026, 9, 27, 10, 30)
+    assert date_from_name("jstack_20260927103015.txt") == datetime(2026, 9, 27, 10, 30, 15)
+    assert date_from_name("gc_20260927_1.log") == datetime(2026, 9, 27)
     assert date_from_name("export_27.09.2026.csv") == datetime(2026, 9, 27)
     assert date_from_name("server1.log00001") is None and date_from_name("v20261399.txt") is None
 
@@ -432,7 +434,8 @@ def test_other_files_by_original_file_time(tmp_path: Path):
     ms = datetime(2026, 9, 27, 10, 45).timestamp() * 1000
     bundle = io.BytesIO()
     with zipfile.ZipFile(bundle, "w") as z:
-        z.writestr(zipfile.ZipInfo("export/konfig.xml", date_time=(2026, 9, 27, 9, 0, 0)), "<cfg/>")
+        z.writestr(zipfile.ZipInfo("export/konfig.xml", date_time=(2026, 9, 27, 10, 20, 0)), "<cfg/>")
+        z.writestr(zipfile.ZipInfo("export/frueh.xml", date_time=(2026, 9, 27, 9, 0, 0)), "<frueh/>")  # vor dem Zeitraum
         z.writestr(zipfile.ZipInfo("export/alt.xml", date_time=(2025, 1, 1, 9, 0, 0)), "<alt/>")
     with _client(tmp_path / "data") as c:
         c.app.state.jobs.wait()
@@ -447,3 +450,25 @@ def test_other_files_by_original_file_time(tmp_path: Path):
         assert other == ["sonstige/wls01/bild.png", "sonstige/wls01/export/export/konfig.xml"], other
         m = {e["eintrag"]: e for e in json.loads(z.read("manifest.json"))["dateien"]}
         assert m["sonstige/wls01/bild.png"]["datum_aus"] == "dateizeit"
+
+
+def test_other_files_must_fit_time_frame(tmp_path: Path):
+    """Sonstige Dateien kommen in das Paket, dessen Zeitrahmen sie treffen - nicht nur nach Tag."""
+    from .conftest import AWR_TXT, SERVER
+    with _client(tmp_path / "data") as c:
+        c.app.state.jobs.wait()
+        for name, body in [("server1.log", SERVER), ("awrrpt_1_100_101.html", AWR_HTML), ("awrrpt_1_102_103.txt", AWR_TXT),
+                           ("dump_2026-09-27_1030.txt", "Full thread dump A\n"),           # 10:30 -> 1000-1100
+                           ("dump_2026-09-27_1330.txt", "Full thread dump B\n"),           # 13:30 -> 1259-1400
+                           ("dump_2026-09-27_1600.txt", "Full thread dump C\n"),           # 16:00 -> keins
+                           ("gc.log", "2026-09-27 10:40:00 GC pause\n2026-09-27 13:10:00 GC pause\n"),  # beide
+                           ("gc_20260927.csv", "heap;used\n")]:                            # nur Datum -> beide
+            c.put("/api/upload", params={"name": name, "source": "wls01"}, content=body.encode())
+        c.app.state.jobs.wait()
+
+        def other(pkg):
+            z = zipfile.ZipFile(io.BytesIO(c.get(f"/download/{pkg}").content))
+            return sorted(n.split("/")[-1] for n in z.namelist() if n.startswith("sonstige/"))
+
+        assert other("BORA_2026-09-27_1000-1100.zip") == ["dump_2026-09-27_1030.txt", "gc.log", "gc_20260927.csv"]
+        assert other("BORA_2026-09-27_1259-1400.zip") == ["dump_2026-09-27_1330.txt", "gc.log", "gc_20260927.csv"]

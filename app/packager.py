@@ -192,10 +192,11 @@ def plan_windows(records: list[FileRecord], mode: str, prefix: str = "BORA", mar
                         w.awr.append(rep)
                 if not hits and not require_awr and wanted(begin, end):  # nur ohne AWR-Pflicht: eigenes Paket
                     add_window(rep, begin, end)
-    others = [r for r in records if r.category == detect.UNKNOWN and r.days]
+    # Sonstige Dateien: immer dabei, wenn ihr Zeitrahmen in den Zeitraum des Pakets fällt
+    # (Inhalt von-bis, Zeitpunkt aus Name/Dateizeit; nur Datum bekannt -> ganzer Tag)
+    others = [r for r in records if r.category == detect.UNKNOWN and r.first and r.last]
     for w in windows.values():
-        wdays = set(detect.days_between(w.start, w.end - timedelta(seconds=1)))
-        w.other = [r for r in others if wdays & set(r.days)]
+        w.other = [r for r in others if w.overlaps(r.first, r.last)]
     return sorted(windows.values(), key=lambda w: (w.start, w.name))
 
 

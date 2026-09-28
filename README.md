@@ -48,13 +48,18 @@ vorliegen), wird kein Paket erzeugt. Kommen passende Logs später dazu,
 entsteht das Paket automatisch; werden sie gelöscht, wird es entfernt.
 Abschaltbar mit `BORA_REQUIRE_LOGS=0`.
 
-**Sonstige Dateien mit passendem Datum.** Alle weiteren Dateien (z. B.
+**Alle Dateien, die zum Zeitrahmen passen.** Alle weiteren Dateien (z. B.
 Thread-Dumps, GC-Logs, CSV-/nmon-/sar-Exporte, Konfigurationen, Bilder) kommen
-vollständig unter `sonstige/` in jedes Paket, dessen Datum passt. Das Datum
-wird ermittelt aus: 1. Zeitstempeln im Inhalt, 2. dem Dateinamen
-(`2026-09-27`, `20260927`, `27.09.2026`), 3. dem Original-Änderungsdatum
-(Browser-Upload überträgt es, ZIP-Einträge behalten es, eingebundene
-Verzeichnisse haben es ohnehin). Ohne erkennbares Datum wird nichts geraten.
+vollständig unter `sonstige/` in jedes Paket, **dessen Zeitraum sie treffen**:
+
+| Zeitangabe der Datei | ins Paket, wenn … |
+|---|---|
+| Zeitstempel im Inhalt (von–bis) | sich von–bis mit dem Paket-Zeitraum überschneidet |
+| Datum mit Uhrzeit im Namen (`dump_2026-09-27_1030.txt`, `jstack_20260927103015.txt`) | der Zeitpunkt im Paket-Zeitraum liegt |
+| Original-Änderungszeitpunkt (Browser-Upload überträgt ihn, ZIP-Einträge und eingebundene Verzeichnisse behalten ihn) | der Zeitpunkt im Paket-Zeitraum liegt |
+| nur Datum im Namen (`gc_20260927.csv`, `27.09.2026`) | der Tag passt (genauer nicht bekannt) |
+
+Ohne erkennbare Zeitangabe wird nichts geraten.
 Sonstige Dateien allein erzeugen kein Paket. Ausgenommen: EAR/WAR/JAR/RAR und
 auf `ignore` gesetzte Dateien.
 

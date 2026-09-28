@@ -148,14 +148,18 @@ def parse_oracle_ts(value: str) -> Optional[datetime]:
     return parse_text(f"{m[1]} {hour:02d}:{m[3]}:{m[4] or '00'}")
 
 
+# optionale Uhrzeit direkt nach dem Datum: _1030, -103000, T10:30:00, " 10.30"
+_NAME_TIME = r"(?:[T_\-. ]?([01]\d|2[0-3])[:.\-h]?([0-5]\d)(?:[:.\-]?([0-5]\d))?)?"
 _RX_NAME_DATE = [
-    re.compile(r"(?<!\d)(20\d{2})[-_.]?(0[1-9]|1[0-2])[-_.]?(0[1-9]|[12]\d|3[01])(?!\d)"),   # 2026-09-27, 20260927
-    re.compile(r"(?<!\d)(0[1-9]|[12]\d|3[01])\.(0[1-9]|1[0-2])\.(20\d{2})(?!\d)"),          # 27.09.2026
+    # 2026-09-27, 20260927, 2026_09_27 (+ Uhrzeit)
+    re.compile(r"(?<!\d)(20\d{2})[-_.]?(0[1-9]|1[0-2])[-_.]?(0[1-9]|[12]\d|3[01])" + _NAME_TIME + r"(?!\d)"),
+    # 27.09.2026 (+ Uhrzeit)
+    re.compile(r"(?<!\d)(0[1-9]|[12]\d|3[01])\.(0[1-9]|1[0-2])\.(20\d{2})" + _NAME_TIME + r"(?!\d)"),
 ]
 
 
-def date_from_name(name: str) -> Optional[datetime]:
-    """Datum im Dateinamen (2026-09-27, 20260927, 2026_09_27, 27.09.2026)."""
+def datetime_from_name(name: str) -> Optional[tuple[datetime, bool]]:
+    """Datum (ggf. mit Uhrzeit) im Dateinamen. Liefert (Zeitpunkt, Uhrzeit_bekannt)."""
     m = _RX_NAME_DATE[0].search(name)
     if m:
         y, mo, d = int(m[1]), int(m[2]), int(m[3])
@@ -164,10 +168,19 @@ def date_from_name(name: str) -> Optional[datetime]:
         if not m:
             return None
         d, mo, y = int(m[1]), int(m[2]), int(m[3])
+    hh, mi, ss = m[4], m[5], m[6]
     try:
-        return datetime(y, mo, d)
+        if hh is not None and mi is not None:
+            return datetime(y, mo, d, int(hh), int(mi), int(ss or 0)), True
+        return datetime(y, mo, d), False
     except ValueError:
         return None
+
+
+def date_from_name(name: str) -> Optional[datetime]:
+    """Zeitpunkt aus dem Dateinamen (ohne Uhrzeit: 00:00)."""
+    r = datetime_from_name(name)
+    return r[0] if r else None
 
 
 # Dateizeiten vor 2000 gelten als unbekannt (Uploads ohne Original-Zeitstempel werden auf 0 gesetzt)
@@ -175,11 +188,11 @@ TRUSTED_MTIME_FROM = datetime(2000, 1, 1).timestamp()
 
 
 def date_from_mtime(path: Path) -> Optional[datetime]:
-    """Änderungsdatum der Datei - nur wenn es als Original-Zeitstempel bekannt ist."""
+    """Änderungszeitpunkt der Datei - nur wenn er als Original-Zeitstempel bekannt ist."""
     mtime = path.stat().st_mtime
     if mtime < TRUSTED_MTIME_FROM:
         return None
-    return datetime.fromtimestamp(mtime).replace(hour=0, minute=0, second=0, microsecond=0)
+    return datetime.fromtimestamp(mtime).replace(microsecond=0)
 
 
 def is_binary(path: Path) -> bool:
