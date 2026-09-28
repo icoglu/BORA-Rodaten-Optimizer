@@ -131,9 +131,10 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
             return {}
         records = catalog.all()
         windows = packager.plan_windows(records, "awr", settings.zip_prefix, settings.awr_margin_min,
-                                             require_awr=settings.require_awr)
+                                             require_awr=settings.require_awr, log_scope=settings.log_scope)
         todo = [w for w in windows
                 if not (settings.output_dir / f"{w.name}.zip").exists()
+                or any(d in days for d in detect.days_between(w.log_range[0], w.log_range[1] - timedelta(seconds=1)))
                 or any(d in days for d in detect.days_between(w.start, w.end - timedelta(seconds=1)))]
         built = packager.build(records, todo, settings.output_dir, settings.work_dir, "awr",
                                lambda msg, pct=None: progress(f"AWR-Pakete: {msg}", pct),
@@ -243,7 +244,8 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
         for f in files:
             counts[f.category] += 1
         plan_day = packager.plan_windows(files, "day", settings.zip_prefix, require_awr=settings.require_awr)
-        plan_awr = packager.plan_windows(files, "awr", settings.zip_prefix, require_awr=settings.require_awr)
+        plan_awr = packager.plan_windows(files, "awr", settings.zip_prefix, require_awr=settings.require_awr,
+                                         log_scope=settings.log_scope)
         if settings.require_logs:
             plan_day = [w for w in plan_day if packager.has_log_candidates(w, files)]
             plan_awr = [w for w in plan_awr if packager.has_log_candidates(w, files)]
@@ -254,6 +256,7 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
             "warnings": [c for c in getattr(app.state, "selfcheck", []) if not c["ok"]],
             "auto_package": settings.auto_package, "require_awr": settings.require_awr,
             "day_packages": settings.day_packages, "require_logs": settings.require_logs,
+            "log_scope": settings.log_scope,
             "has_awr": any(f.category == detect.AWR and packager.is_awr_report(f) for f in files),
             "summary": {
                 "AWR-Reports": sum(1 for f in files if f.category == detect.AWR and packager.is_awr_report(f)),
@@ -377,7 +380,7 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
         def run(progress):
             records = catalog.all()
             windows = packager.plan_windows(records, mode, settings.zip_prefix, margin, dfrom, dto,
-                                            require_awr=settings.require_awr)
+                                            require_awr=settings.require_awr, log_scope=settings.log_scope)
             if not windows:
                 return {"zips": [], "hinweis": "Keine passenden Zeitfenster gefunden"}
             zips = packager.build(records, windows, settings.output_dir, settings.work_dir, mode, progress,

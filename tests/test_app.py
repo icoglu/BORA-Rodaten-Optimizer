@@ -178,7 +178,7 @@ def test_rule_one_awr_period_collects_logs_and_other_reports(tmp_path: Path):
     Oracle-Reports automatisch zusammenführen."""
     from .conftest import SERVER
     from .test_oracle_reports import ADDM_TXT, ASH_HTML
-    with _client(tmp_path / "data") as c:
+    with _client(tmp_path / "data", log_scope="snap") as c:
         c.app.state.jobs.wait()
         for name, body in [("access.log", ACCESS), ("server1.log", SERVER), ("awrrpt_1_100_101.html", AWR_HTML),
                            ("addmrpt_1.txt", ADDM_TXT), ("ashrpt_1.html", ASH_HTML)]:
@@ -266,7 +266,7 @@ def test_reset_deletes_everything(tmp_path: Path):
 def test_default_only_awr_packages_with_snap_time_lines(tmp_path: Path):
     """Standard: nur AWR-Pakete; aus den Logs nur die Zeilen zwischen Begin und End Snap Time."""
     from .conftest import SERVER
-    with _client(tmp_path / "data") as c:
+    with _client(tmp_path / "data", log_scope="snap") as c:
         c.app.state.jobs.wait()
         for name, body in [("access.log", ACCESS), ("server1.log", SERVER), ("awrrpt_1_100_101.html", AWR_HTML)]:
             c.put("/api/upload", params={"name": name, "source": "wls01"}, content=body.encode())
@@ -574,7 +574,7 @@ def test_log_content_checked_in_whole_line(tmp_path: Path):
     pad = "x" * 300                                       # Zeitstempel erst nach > 256 Zeichen
     lines = [f'{{"level":"INFO","ctx":"{pad}","time":"2026-09-27T{h}:00","msg":"m{h}"}}' for h in ("09:30", "10:30", "12:30")]
     json_log = "\n".join(lines) + "\n"
-    with _client(tmp_path / "data") as c:
+    with _client(tmp_path / "data", log_scope="snap") as c:
         c.app.state.jobs.wait()
         c.put("/api/upload", params={"name": "server_json.log", "source": "wls01"}, content=json_log.encode())
         c.put("/api/upload", params={"name": "awrrpt_1_100_101.html", "source": "db"}, content=AWR_HTML.encode())
@@ -588,3 +588,27 @@ def test_log_content_checked_in_whole_line(tmp_path: Path):
             assert e.get("inhaltspruefung"), e["eintrag"]                          # jede Datei geprüft
         srv = next(e for e in json.loads(z.read("manifest.json"))["dateien"] if e["kategorie"] == "server")
         assert srv["inhaltspruefung"].startswith("zeilengenau: 1 von 3 Zeilen")
+
+
+def test_logs_same_date_complete_day(tmp_path: Path):
+    """Standard: Logs mit gleichem Datum wie der AWR-Report -> kompletter Tag (00:00-23:59), andere Tage nicht."""
+    from .conftest import SERVER, SERVER_ROTATED
+    log = SERVER + "####<Sep 28, 2026 1:00:00,000 AM CEST> <Info> <Server> <h> <A> <m> <<K>> <> <> <9> <B> <Folgetag>\n"
+    with _client(tmp_path / "data") as c:
+        c.app.state.jobs.wait()
+        for name, body in [("access.log", ACCESS), ("server1.log", log), ("server1.log00001", SERVER_ROTATED),
+                           ("awrrpt_1_100_101.html", AWR_HTML)]:
+            c.put("/api/upload", params={"name": name, "source": "wls01"}, content=body.encode())
+        c.app.state.jobs.wait()
+        assert [o["name"] for o in c.get("/api/outputs").json()] == ["BORA_2026-09-27_1000-1100.zip"]
+        z = zipfile.ZipFile(io.BytesIO(c.get("/download/BORA_2026-09-27_1000-1100.zip").content))
+        access = z.read("access/wls01/access.log").decode()
+        server = z.read("server/wls01/server1.log").decode()
+        assert "00:00:01" in access and "10:15:00" in access and "11:30:00" in access   # ganzer 27.09.
+        assert "26/Sep/2026" not in access                                               # Vortag nicht
+        assert "10:05:00" in server and "1:05:00,000 PM" in server                       # auch 13:05
+        assert "Folgetag" not in server                                                   # 28.09. nicht
+        assert "server/wls01/server1.log00001" not in z.namelist()                       # nur 26.09. -> nicht
+        m = json.loads(z.read("manifest.json"))
+        assert m["log_zeitraum"] == {"von": "2026-09-27T00:00:00", "bis_exklusiv": "2026-09-28T00:00:00"}
+        assert m["zeitraum"]["von"] == "2026-09-27T10:00:05"                             # Snap-Zeitraum bleibt

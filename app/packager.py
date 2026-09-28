@@ -43,6 +43,9 @@ class Window:
     other: list[FileRecord] = field(default_factory=list)
     # Einheitlicher Zeitstempel für das ZIP und alle Einträge (Tag 00:00 bzw. AWR-Beginn ohne Puffer)
     stamp: Optional[datetime] = None
+    # Zeitraum für Log-Zeilen, falls abweichend (z.B. ganzer Tag statt Snap Time)
+    log_start: Optional[datetime] = None
+    log_end: Optional[datetime] = None  # exklusiv
 
     @property
     def timestamp(self) -> datetime:
@@ -53,6 +56,18 @@ class Window:
 
     def overlaps(self, first: Optional[datetime], last: Optional[datetime]) -> bool:
         return first is not None and last is not None and first < self.end and last >= self.start
+
+    @property
+    def log_range(self) -> tuple[datetime, datetime]:
+        return (self.log_start or self.start, self.log_end or self.end)
+
+    def log_contains(self, ts: datetime) -> bool:
+        a, b = self.log_range
+        return a <= ts < b
+
+    def log_overlaps(self, first: Optional[datetime], last: Optional[datetime]) -> bool:
+        a, b = self.log_range
+        return first is not None and last is not None and first < b and last >= a
 
 
 def _fmt_range(begin: datetime, end: datetime) -> str:
@@ -135,14 +150,15 @@ def content_fits(w: Window, rec: FileRecord) -> bool:
 def has_log_candidates(w: Window, records: list[FileRecord]) -> bool:
     """Schnelle Vorab-Prüfung (Katalog): überschneidet sich eine Log-Datei mit dem Fenster?
     Die genaue Prüfung auf Zeilenebene erfolgt in build()."""
-    return any(r.category in detect.LOG_CATEGORIES and w.overlaps(r.first, r.last) for r in records)
+    return any(r.category in detect.LOG_CATEGORIES and w.log_overlaps(r.first, r.last) for r in records)
 
 
 def plan_windows(records: list[FileRecord], mode: str, prefix: str = "BORA", margin_min: int = 0,
                  date_from: Optional[date] = None, date_to: Optional[date] = None,
-                 require_awr: bool = True) -> list[Window]:
+                 require_awr: bool = True, log_scope: str = "snap") -> list[Window]:
     """Zeitfenster planen. ``require_awr``: ohne AWR-Report kein Paket - Tages-Pakete
-    nur für Tage mit AWR-Report, andere Oracle-Reports nur zusammen mit einem AWR."""
+    nur für Tage mit AWR-Report, andere Oracle-Reports nur zusammen mit einem AWR.
+    ``log_scope`` (AWR-Pakete): "snap" = Log-Zeilen der Snap Time, "tag" = kompletter Tag."""
     if mode not in MODES:
         raise ValueError(f"Unbekannter Modus: {mode}")
     records, _ = deduplicate(records)
@@ -200,6 +216,11 @@ def plan_windows(records: list[FileRecord], mode: str, prefix: str = "BORA", mar
                         w.awr.append(rep)
                 if not hits and not require_awr and wanted(begin, end):  # nur ohne AWR-Pflicht: eigenes Paket
                     add_window(rep, begin, end)
+    if mode == "awr" and log_scope == "tag":
+        # Logs mit gleichem Datum: kompletter Tag (bzw. alle Tage, die der AWR-Zeitraum berührt)
+        for w in windows.values():
+            w.log_start = datetime.combine(w.start.date(), time.min)
+            w.log_end = datetime.combine((w.end - timedelta(seconds=1)).date(), time.min) + timedelta(days=1)
     # Sonstige Dateien: immer dabei, wenn ihr Zeitrahmen in den Zeitraum des Pakets fällt
     # (Inhalt von-bis, Zeitpunkt aus Name/Dateizeit; nur Datum bekannt -> ganzer Tag)
     others = [r for r in records if r.category == detect.UNKNOWN and r.first and r.last]
@@ -232,7 +253,7 @@ def _slice_log(rec: FileRecord, windows: list[Window], by_day: Optional[dict[str
                tmp: Path) -> dict[int, _Slice]:
     """Eine Log-Datei einmal sequentiell lesen und auf die Zeitfenster verteilen."""
     slices: dict[int, _Slice] = {}
-    candidates = [i for i, w in enumerate(windows) if w.overlaps(rec.first, rec.last)]
+    candidates = [i for i, w in enumerate(windows) if w.log_overlaps(rec.first, rec.last)]
     if not candidates:
         return slices
     parser = LineTimestampParser(whole_line=rec.info.get("ts_mode") == "ganze Zeile")
@@ -244,7 +265,7 @@ def _slice_log(rec: FileRecord, windows: list[Window], by_day: Optional[dict[str
         if by_day is not None:
             idx = by_day.get(ts.date().isoformat())
             return [idx] if idx is not None else []
-        return [i for i in candidates if windows[i].contains(ts)]
+        return [i for i in candidates if windows[i].log_contains(ts)]
 
     def write(idx: int, line: bytes, ts: datetime) -> None:
         s = slices.get(idx)
@@ -344,6 +365,7 @@ def _write_zip(w: Window, slices: list[tuple[FileRecord, _Slice]], out_dir: Path
         "paket": w.name,
         "modus": mode,
         "zeitraum": {"von": w.start.isoformat(), "bis_exklusiv": w.end.isoformat()},
+        "log_zeitraum": {"von": w.log_range[0].isoformat(), "bis_exklusiv": w.log_range[1].isoformat()},
         "zeitstempel": w.timestamp.isoformat(),
         "erstellt": datetime.now().isoformat(timespec="seconds"),
         "dateien": [],
