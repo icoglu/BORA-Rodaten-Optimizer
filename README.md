@@ -59,6 +59,15 @@ vollständig unter `sonstige/` in jedes Paket, **dessen Zeitraum sie treffen**:
 | Original-Änderungszeitpunkt (Browser-Upload überträgt ihn, ZIP-Einträge und eingebundene Verzeichnisse behalten ihn) | der Zeitpunkt im Paket-Zeitraum liegt |
 | nur Datum im Namen (`gc_20260927.csv`, `27.09.2026`) | der Tag passt (genauer nicht bekannt) |
 
+**Inhaltsprüfung:** Der Inhalt hat immer Vorrang. Jede Textdatei wird
+vollständig durchsucht – Zeitangaben überall in der Zeile (auch lange
+JSON/XML-Zeilen, HTML-Exporte, CSV-Spalten) sowie reine Datumsangaben.
+Maßgeblich sind die **tatsächlich belegten Zeitabschnitte**: ein einzelnes
+abweichendes Datum (z. B. „Copyright 2019“) dehnt den Zeitrahmen nicht aus.
+Widerspricht der Inhalt dem Dateinamen oder der Dateizeit, zählt der Inhalt;
+das Ergebnis steht je Datei in der `manifest.json` unter `inhaltspruefung`
+(„Inhalt passt“, „Inhalt maßgeblich – abweichend: …“, „kein Datum im Inhalt“).
+
 Ohne erkennbare Zeitangabe wird nichts geraten.
 Sonstige Dateien allein erzeugen kein Paket. Ausgenommen: EAR/WAR/JAR/RAR und
 auf `ignore` gesetzte Dateien.

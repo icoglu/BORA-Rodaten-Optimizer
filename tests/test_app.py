@@ -472,3 +472,39 @@ def test_other_files_must_fit_time_frame(tmp_path: Path):
 
         assert other("BORA_2026-09-27_1000-1100.zip") == ["dump_2026-09-27_1030.txt", "gc.log", "gc_20260927.csv"]
         assert other("BORA_2026-09-27_1259-1400.zip") == ["dump_2026-09-27_1330.txt", "gc.log", "gc_20260927.csv"]
+
+
+def test_content_check_of_other_files(tmp_path: Path):
+    """Inhalt wird geprüft: Zeitangaben überall in der Zeile, einzelne Ausreißer-Daten dehnen den
+    Zeitrahmen nicht, und bei Widerspruch zum Dateinamen zählt der Inhalt."""
+    long_json = '{"meta":"' + "x" * 600 + '","ts":"2026-09-27T10:25:00Z","v":1}\n'          # Datum weit hinten
+    copyright_ = "Copyright 2019-01-01 Firma\n2026-09-27 13:30:00 Messung\n"                 # Ausreißer 2019
+    wrong_name = "2026-09-27 10:40:00 wirklich vom 27.09.\n"                                  # Name sagt 10.04.
+    html_export = "<html><body><table><tr><td>Stand: 27.09.2026 10:50</td></tr></table></body></html>\n"
+    other_day = "<x><time>2026-09-26T10:30:00</time></x>\n"                                  # anderer Tag
+    with _client(tmp_path / "data") as c:
+        c.app.state.jobs.wait()
+        for name, body in [("access.log", ACCESS), ("awrrpt_1_100_101.html", AWR_HTML),
+                           ("metrics.json", long_json), ("messung.txt", copyright_),
+                           ("export_2026-04-10.txt", wrong_name), ("oem_export.html", html_export),
+                           ("config_dump.xml", other_day)]:
+            c.put("/api/upload", params={"name": name, "source": "wls01"}, content=body.encode())
+        c.app.state.jobs.wait()
+        z = zipfile.ZipFile(io.BytesIO(c.get("/download/BORA_2026-09-27_1000-1100.zip").content))
+        other = sorted(n.split("/")[-1] for n in z.namelist() if n.startswith("sonstige/"))
+        # messung.txt: nur 2019 + 13:30 belegt -> nicht im 10-11-Uhr-Paket; config_dump.xml: 26.09.
+        assert other == ["export_2026-04-10.txt", "metrics.json", "oem_export.html"], other
+        m = {e["eintrag"].split("/")[-1]: e for e in json.loads(z.read("manifest.json"))["dateien"]}
+        assert m["metrics.json"]["datum_aus"] == "inhalt"
+        assert m["export_2026-04-10.txt"]["inhaltspruefung"].startswith("Inhalt maßgeblich")
+        assert "2026-04-10" in m["export_2026-04-10.txt"]["inhaltspruefung"]
+        assert m["oem_export.html"]["inhaltspruefung"] == "Inhalt passt"
+
+
+def test_find_all_timestamps_anywhere():
+    from datetime import datetime
+    from app.timestamps import find_all
+    stamps, dates = find_all('a;b;c;"2026-09-27 10:15:00";x;27.09.2026;<d>2026-09-28</d>')
+    assert datetime(2026, 9, 27, 10, 15) in stamps
+    assert set(dates) == {datetime(2026, 9, 27), datetime(2026, 9, 28)}
+    assert find_all("Version 1.2.3 build 4711") == ([], [])

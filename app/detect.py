@@ -10,7 +10,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import BinaryIO, Callable, Optional
 
-from .timestamps import LineTimestampParser, parse_text
+from .timestamps import LineTimestampParser, find_all, parse_text
 
 ACCESS = "access"
 SERVER = "server"
@@ -312,3 +312,62 @@ def days_between(begin: datetime, end: datetime) -> list[str]:
         out.append(d.isoformat())
         d += timedelta(days=1)
     return out
+
+
+# ------------------------------------------------------------ Inhaltsprüfung
+
+INTERVAL_GAP = timedelta(minutes=10)   # Zeitangaben mit kleinerem Abstand bilden einen Abschnitt
+MAX_INTERVALS = 500
+MAX_LINE_CHARS = 1_000_000             # sehr lange Zeilen (minifiziertes JSON/XML) nur bis hierhin prüfen
+
+
+@dataclass
+class ContentInfo:
+    intervals: list[tuple[datetime, datetime]] = field(default_factory=list)  # belegte Zeitabschnitte
+    stamps: int = 0
+    sha256: str = ""
+
+
+def _merge(points: list[tuple[datetime, datetime]], gap: timedelta) -> list[tuple[datetime, datetime]]:
+    out: list[tuple[datetime, datetime]] = []
+    for b, e in sorted(points):
+        if out and b - out[-1][1] <= gap:
+            out[-1] = (out[-1][0], max(out[-1][1], e))
+        else:
+            out.append((b, e))
+    return out
+
+
+def scan_content(path: Path, progress: Optional[Callable[[float], None]] = None) -> ContentInfo:
+    """Gesamten Inhalt einer (Text-)Datei nach Zeitangaben durchsuchen - überall in der Zeile.
+    Ergebnis sind die tatsächlich belegten Zeitabschnitte; ein einzelnes abweichendes Datum
+    (z.B. Copyright) dehnt den Zeitrahmen so nicht auf Jahre aus."""
+    info = ContentInfo()
+    digest = hashlib.sha256()
+    points: set[tuple[datetime, datetime]] = set()
+    size = path.stat().st_size or 1
+    read = 0
+    with open_binary(path) as fh:
+        for n, raw in enumerate(fh, 1):
+            digest.update(raw)
+            read += len(raw)
+            if progress and n % 200_000 == 0:
+                progress(min(read / size, 1.0))
+            text = raw[:MAX_LINE_CHARS].decode("utf-8", errors="replace")
+            stamps, dates = find_all(text)
+            for ts in stamps:
+                ts = ts.replace(second=0)
+                points.add((ts, ts + timedelta(seconds=59)))
+            for d in dates:
+                points.add((d, d + timedelta(days=1) - timedelta(seconds=1)))
+            info.stamps += len(stamps) + len(dates)
+            if len(points) > 200_000:  # Speicher begrenzen: zwischendurch verdichten
+                points = set(_merge(list(points), INTERVAL_GAP))
+    info.sha256 = digest.hexdigest()
+    gap = INTERVAL_GAP
+    merged = _merge(list(points), gap)
+    while len(merged) > MAX_INTERVALS:
+        gap *= 2
+        merged = _merge(merged, gap)
+    info.intervals = merged
+    return info

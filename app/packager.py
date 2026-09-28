@@ -124,6 +124,14 @@ def deduplicate(records: list[FileRecord]) -> tuple[list[FileRecord], dict[int, 
     return sorted(out, key=lambda r: r.id), dups
 
 
+def content_fits(w: Window, rec: FileRecord) -> bool:
+    """Inhaltsprüfung: liegt mindestens ein belegter Zeitabschnitt der Datei im Zeitraum?"""
+    intervals = rec.info.get("intervals")
+    if intervals:
+        return any(w.overlaps(datetime.fromisoformat(b), datetime.fromisoformat(e)) for b, e in intervals)
+    return w.overlaps(rec.first, rec.last)
+
+
 def has_log_candidates(w: Window, records: list[FileRecord]) -> bool:
     """Schnelle Vorab-Prüfung (Katalog): überschneidet sich eine Log-Datei mit dem Fenster?
     Die genaue Prüfung auf Zeilenebene erfolgt in build()."""
@@ -196,7 +204,7 @@ def plan_windows(records: list[FileRecord], mode: str, prefix: str = "BORA", mar
     # (Inhalt von-bis, Zeitpunkt aus Name/Dateizeit; nur Datum bekannt -> ganzer Tag)
     others = [r for r in records if r.category == detect.UNKNOWN and r.first and r.last]
     for w in windows.values():
-        w.other = [r for r in others if w.overlaps(r.first, r.last)]
+        w.other = [r for r in others if content_fits(w, r)]
     return sorted(windows.values(), key=lambda w: (w.start, w.name))
 
 
@@ -376,7 +384,8 @@ def _write_zip(w: Window, slices: list[tuple[FileRecord, _Slice]], out_dir: Path
             _add(zf, o.path, arc, w.timestamp)
             manifest["dateien"].append({
                 "eintrag": arc, "kategorie": "sonstige", "quelle": f"{o.root}/{o.rel}",
-                "datum_aus": o.info.get("date_source"), "tage": o.days, **dup_info(o),
+                "datum_aus": o.info.get("date_source"), "inhaltspruefung": o.info.get("pruefung"),
+                "tage": o.days, **dup_info(o),
             })
         minfo = zipfile.ZipInfo("manifest.json", date_time=_zip_time(w.timestamp))
         minfo.compress_type = zipfile.ZIP_DEFLATED

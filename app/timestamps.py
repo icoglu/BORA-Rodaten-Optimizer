@@ -107,3 +107,37 @@ class LineTimestampParser:
                 self._preferred = i
                 return ts
         return None
+
+
+# Reines Datum ohne Uhrzeit (z.B. in CSV/XML/HTML): 2026-09-27 | 27.09.2026
+_DATE_ONLY = [
+    (re.compile(r"(?<!\d)(20\d{2})-(0[1-9]|1[0-2])-(0[1-9]|[12]\d|3[01])(?![T\s:.]?\d)"),
+     lambda m: datetime(int(m[1]), int(m[2]), int(m[3]))),
+    (re.compile(r"(?<!\d)(0[1-9]|[12]\d|3[01])\.(0[1-9]|1[0-2])\.(20\d{2})(?![,\s]*\d{1,2}[:.]\d)"),
+     lambda m: datetime(int(m[3]), int(m[2]), int(m[1]))),
+]
+PLAUSIBLE_FROM, PLAUSIBLE_TO = datetime(2000, 1, 1), datetime(2100, 1, 1)
+
+
+def find_all(text: str) -> tuple[list[datetime], list[datetime]]:
+    """Alle Zeitangaben einer Zeile - nicht nur am Zeilenanfang.
+    Liefert (Zeitpunkte mit Uhrzeit, reine Datumsangaben)."""
+    stamps: list[datetime] = []
+    for rx, conv in PATTERNS:
+        for m in rx.finditer(text):
+            try:
+                ts = conv(m)
+            except (KeyError, ValueError):
+                continue
+            if PLAUSIBLE_FROM <= ts < PLAUSIBLE_TO:
+                stamps.append(ts)
+    dates: list[datetime] = []
+    for rx, conv in _DATE_ONLY:
+        for m in rx.finditer(text):
+            try:
+                d = conv(m)
+            except ValueError:
+                continue
+            if PLAUSIBLE_FROM <= d < PLAUSIBLE_TO:
+                dates.append(d)
+    return stamps, dates

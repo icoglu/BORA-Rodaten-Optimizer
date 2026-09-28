@@ -14,7 +14,7 @@ from . import detect
 
 # Erhöhen, wenn sich die Analyse ändert - vorhandene Einträge werden dann neu
 # analysiert (manuelle Kategorien bleiben erhalten).
-ANALYSIS_VERSION = "6"
+ANALYSIS_VERSION = "7"
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
@@ -63,6 +63,17 @@ class FileRecord:
 
 def _dt(v: Optional[str]) -> Optional[datetime]:
     return datetime.fromisoformat(v) if v else None
+
+
+def _consistency(intervals, named, mtime_dt) -> str:
+    """Passt der Inhalt zu Dateiname bzw. Dateizeit? (Der Inhalt hat Vorrang.)"""
+    content_days = {d for b, e in intervals for d in detect.days_between(b, e)}
+    notes = []
+    if named and named[0].date().isoformat() not in content_days:
+        notes.append(f"Dateiname nennt {named[0].date().isoformat()}")
+    if mtime_dt and mtime_dt.date().isoformat() not in content_days and not named:
+        notes.append(f"Dateizeit {mtime_dt.date().isoformat()}")
+    return "Inhalt passt" if not notes else "Inhalt maßgeblich – abweichend: " + ", ".join(notes)
 
 
 class Catalog:
@@ -202,23 +213,29 @@ class Catalog:
                 else:
                     error = "Oracle-Report: Beginn/Ende nicht gefunden"
             elif category == detect.UNKNOWN:
-                # Sonstige Dateien: Datum aus dem Inhalt, sonst aus dem Dateinamen
-                li = None if detect.is_binary(path) else detect.scan_log(path, file_progress)
-                if li and li.stamped_lines:
-                    first, last, days = li.first, li.last, sorted(li.days)
-                    info = {"sha256": li.sha256, "date_source": "inhalt"}
+                # Sonstige Dateien: Inhalt prüfen (ganze Datei, überall in der Zeile);
+                # nur wenn er keine Zeitangaben enthält: Dateiname, dann Dateizeit
+                ci = None if detect.is_binary(path) else detect.scan_content(path, file_progress)
+                named = detect.datetime_from_name(path.name)
+                mtime_dt = detect.date_from_mtime(path)
+                if ci and ci.intervals:
+                    first, last = ci.intervals[0][0], ci.intervals[-1][1]
+                    days = sorted({d for b, e in ci.intervals for d in detect.days_between(b, e)})
+                    info = {"sha256": ci.sha256, "date_source": "inhalt", "zeitangaben": ci.stamps,
+                            "intervals": [[b.isoformat(), e.isoformat()] for b, e in ci.intervals],
+                            "pruefung": _consistency(ci.intervals, named, mtime_dt)}
                 else:
                     # Zeitrahmen der Datei: Zeitpunkt (Name mit Uhrzeit, Dateizeit) oder ganzer Tag
-                    info = {"sha256": li.sha256 if li else detect.file_sha256(path)}
-                    named = detect.datetime_from_name(path.name)
+                    info = {"sha256": ci.sha256 if ci else detect.file_sha256(path),
+                            "pruefung": "kein Datum im Inhalt" if ci else "Binärdatei - Inhalt nicht prüfbar"}
                     if named and named[1]:
                         first = last = named[0]
                         info["date_source"] = "dateiname"
                     elif named:
                         first, last = named[0], named[0] + timedelta(days=1) - timedelta(seconds=1)
                         info["date_source"] = "dateiname (nur Datum)"
-                    elif (m := detect.date_from_mtime(path)) is not None:
-                        first = last = m
+                    elif mtime_dt is not None:
+                        first = last = mtime_dt
                         info["date_source"] = "dateizeit"
                     if first and last:
                         days = detect.days_between(first, last)
