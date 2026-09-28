@@ -14,7 +14,7 @@ from . import detect
 
 # Erhöhen, wenn sich die Analyse ändert - vorhandene Einträge werden dann neu
 # analysiert (manuelle Kategorien bleiben erhalten).
-ANALYSIS_VERSION = "7"
+ANALYSIS_VERSION = "9"
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
@@ -215,19 +215,20 @@ class Catalog:
             elif category == detect.UNKNOWN:
                 # Sonstige Dateien: Inhalt prüfen (ganze Datei, überall in der Zeile);
                 # nur wenn er keine Zeitangaben enthält: Dateiname, dann Dateizeit
-                ci = None if detect.is_binary(path) else detect.scan_content(path, file_progress)
+                ci = detect.scan_content(path, file_progress)
                 named = detect.datetime_from_name(path.name)
                 mtime_dt = detect.date_from_mtime(path)
                 if ci and ci.intervals:
                     first, last = ci.intervals[0][0], ci.intervals[-1][1]
                     days = sorted({d for b, e in ci.intervals for d in detect.days_between(b, e)})
                     info = {"sha256": ci.sha256, "date_source": "inhalt", "zeitangaben": ci.stamps,
+                            "gelesen_als": ci.method,
                             "intervals": [[b.isoformat(), e.isoformat()] for b, e in ci.intervals],
                             "pruefung": _consistency(ci.intervals, named, mtime_dt)}
                 else:
                     # Zeitrahmen der Datei: Zeitpunkt (Name mit Uhrzeit, Dateizeit) oder ganzer Tag
-                    info = {"sha256": ci.sha256 if ci else detect.file_sha256(path),
-                            "pruefung": "kein Datum im Inhalt" if ci else "Binärdatei - Inhalt nicht prüfbar"}
+                    info = {"sha256": ci.sha256, "gelesen_als": ci.method,
+                            "pruefung": f"kein Datum im Inhalt ({ci.method})"}
                     if named and named[1]:
                         first = last = named[0]
                         info["date_source"] = "dateiname"
@@ -242,7 +243,8 @@ class Catalog:
             elif category in detect.LOG_CATEGORIES:
                 li = detect.scan_log(path, file_progress)
                 first, last, days = li.first, li.last, sorted(li.days)
-                info = {"lines": li.lines, "stamped_lines": li.stamped_lines, "sha256": li.sha256}
+                info = {"lines": li.lines, "stamped_lines": li.stamped_lines, "sha256": li.sha256,
+                        "ts_mode": "ganze Zeile" if li.whole_line else "Zeilenanfang"}
                 if li.lines and not li.stamped_lines:
                     error = "Keine Zeitstempel erkannt"
         except Exception as exc:  # defekte Datei darf den Scan nicht abbrechen

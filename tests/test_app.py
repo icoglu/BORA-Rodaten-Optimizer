@@ -508,3 +508,83 @@ def test_find_all_timestamps_anywhere():
     assert datetime(2026, 9, 27, 10, 15) in stamps
     assert set(dates) == {datetime(2026, 9, 27), datetime(2026, 9, 28)}
     assert find_all("Version 1.2.3 build 4711") == ([], [])
+
+
+def _docx(text: str) -> bytes:
+    b = io.BytesIO()
+    with zipfile.ZipFile(b, "w") as z:
+        z.writestr("[Content_Types].xml", "<Types/>")
+        z.writestr("word/document.xml", f"<w:document><w:body><w:p><w:r><w:t>{text}</w:t></w:r></w:p></w:body></w:document>")
+    return b.getvalue()
+
+
+def _xlsx(cell: str) -> bytes:
+    b = io.BytesIO()
+    with zipfile.ZipFile(b, "w") as z:
+        z.writestr("[Content_Types].xml", "<Types/>")
+        z.writestr("xl/sharedStrings.xml", f'<sst><si><t>Zeitpunkt</t></si><si><t>{cell}</t></si></sst>')
+        z.writestr("xl/worksheets/sheet1.xml", "<worksheet><sheetData/></worksheet>")
+    return b.getvalue()
+
+
+def _pdf(page_text: str, created: str) -> bytes:
+    import zlib
+    stream = zlib.compress(f"BT /F1 12 Tf 72 712 Td [({page_text[:10]}) -250 ({page_text[10:]})] TJ ET".encode())
+    return (b"%PDF-1.4\n1 0 obj << /Length " + str(len(stream)).encode() + b" /Filter /FlateDecode >>\nstream\n" + stream +
+            b"\nendstream\nendobj\n2 0 obj << /CreationDate (D:" + created.encode() + b") >>\nendobj\n%%EOF\n")
+
+
+def test_reads_contents_of_office_pdf_binary_and_compressed(tmp_path: Path):
+    """Inhalte werden gelesen und auf das Datum geprüft - auch Office, PDF, Binär, bz2/xz."""
+    import bz2
+    import lzma
+    from .conftest import SERVER
+    files = {
+        "bericht.docx": _docx("Messung vom 27.09.2026 10:35 Uhr"),                  # passt
+        "auswertung.xlsx": _xlsx("2026-09-27 10:12:00"),                             # passt
+        "report.pdf": _pdf("27.09.2026 10:20", "20250101090000"),                    # Seite passt
+        "dump.bin": b"\0\0\1HEADER timestamp=2026-09-27 10:44:00 end\0\0\2",       # Textstelle passt
+        "alt.docx": _docx("Protokoll vom 26.09.2026 10:35"),                         # anderer Tag
+        "alt.bin": b"\0\0created 2026-09-26 10:44:00\0",                             # anderer Tag
+        "server1.log.bz2": bz2.compress(SERVER.encode()),                            # Log, bz2
+        "server2.log.xz": lzma.compress(SERVER.replace("<host>", "<host2>").encode()),  # Log, xz
+    }
+    with _client(tmp_path / "data") as c:
+        c.app.state.jobs.wait()
+        c.put("/api/upload", params={"name": "awrrpt_1_100_101.html", "source": "db"}, content=AWR_HTML.encode())
+        for name, body in files.items():
+            c.put("/api/upload", params={"name": name, "source": "wls01"}, content=body)
+        c.app.state.jobs.wait()
+        z = zipfile.ZipFile(io.BytesIO(c.get("/download/BORA_2026-09-27_1000-1100.zip").content))
+        names = set(z.namelist())
+        other = sorted(n.split("/")[-1] for n in names if n.startswith("sonstige/"))
+        assert other == ["auswertung.xlsx", "bericht.docx", "dump.bin", "report.pdf"], other
+        assert {"server/wls01/server1.log", "server/wls01/server2.log"} <= names     # bz2/xz entpackt
+        assert b"NullPointerException" in z.read("server/wls01/server1.log")
+        m = {e["eintrag"].split("/")[-1]: e for e in json.loads(z.read("manifest.json"))["dateien"]}
+        assert m["bericht.docx"]["inhalt_gelesen_als"] == "office"
+        assert m["report.pdf"]["inhalt_gelesen_als"] == "pdf"
+        assert m["dump.bin"]["inhalt_gelesen_als"] == "binary"
+        assert all(m[n]["datum_aus"] == "inhalt" for n in other)
+
+
+def test_log_content_checked_in_whole_line(tmp_path: Path):
+    """Logs mit Zeitstempel mitten in der Zeile (z.B. JSON-Logs) werden ebenfalls im Inhalt geprüft
+    und zeilengenau zugeschnitten; jede Datei im Manifest trägt ihr Prüfergebnis."""
+    pad = "x" * 300                                       # Zeitstempel erst nach > 256 Zeichen
+    lines = [f'{{"level":"INFO","ctx":"{pad}","time":"2026-09-27T{h}:00","msg":"m{h}"}}' for h in ("09:30", "10:30", "12:30")]
+    json_log = "\n".join(lines) + "\n"
+    with _client(tmp_path / "data") as c:
+        c.app.state.jobs.wait()
+        c.put("/api/upload", params={"name": "server_json.log", "source": "wls01"}, content=json_log.encode())
+        c.put("/api/upload", params={"name": "awrrpt_1_100_101.html", "source": "db"}, content=AWR_HTML.encode())
+        c.app.state.jobs.wait()
+        f = next(x for x in c.get("/api/files").json() if x["rel"].endswith("server_json.log"))
+        assert f["category"] == "server" and f["info"]["ts_mode"] == "ganze Zeile" and not f["error"]
+        z = zipfile.ZipFile(io.BytesIO(c.get("/download/BORA_2026-09-27_1000-1100.zip").content))
+        body = z.read("server/wls01/server_json.log").decode()
+        assert "m10:30" in body and "m09:30" not in body and "m12:30" not in body   # nur 10:30
+        for e in json.loads(z.read("manifest.json"))["dateien"]:
+            assert e.get("inhaltspruefung"), e["eintrag"]                          # jede Datei geprüft
+        srv = next(e for e in json.loads(z.read("manifest.json"))["dateien"] if e["kategorie"] == "server")
+        assert srv["inhaltspruefung"].startswith("zeilengenau: 1 von 3 Zeilen")

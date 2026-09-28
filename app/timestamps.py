@@ -20,6 +20,7 @@ MONTHS = {
 # Nur der Zeilenanfang wird untersucht - Zeitstempel stehen dort, Inhalte
 # weiter hinten (z.B. in Stacktraces) sollen nicht fälschlich matchen.
 HEAD_BYTES = 256
+WHOLE_LINE_BYTES = 64 * 1024
 
 
 def _month(name: str) -> int:
@@ -90,10 +91,15 @@ class LineTimestampParser:
     """Zustandsbehafteter Parser: merkt sich das zuletzt erfolgreiche Muster
     einer Datei, um große Logs schnell zu verarbeiten."""
 
-    def __init__(self) -> None:
+    def __init__(self, whole_line: bool = False) -> None:
         self._preferred: Optional[int] = None
+        # whole_line: Zeitstempel irgendwo in der Zeile suchen (z.B. JSON-Logs), nicht nur am Anfang
+        self.whole_line = whole_line
 
     def parse(self, raw: bytes) -> Optional[datetime]:
+        if self.whole_line:
+            stamps, _ = find_all(raw[:WHOLE_LINE_BYTES].decode("utf-8", errors="replace"))
+            return stamps[0] if stamps else None
         text = raw[:HEAD_BYTES].decode("utf-8", errors="replace")
         if self._preferred is not None:
             ts = _try(self._preferred, text)

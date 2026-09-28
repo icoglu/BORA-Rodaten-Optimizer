@@ -68,6 +68,22 @@ Widerspricht der Inhalt dem Dateinamen oder der Dateizeit, zählt der Inhalt;
 das Ergebnis steht je Datei in der `manifest.json` unter `inhaltspruefung`
 („Inhalt passt“, „Inhalt maßgeblich – abweichend: …“, „kein Datum im Inhalt“).
 
+**Alle Inhalte werden gelesen und auf das Datum geprüft:**
+
+| Dateiart | Prüfung des Inhalts |
+|---|---|
+| Access-/Server-Logs (auch `.gz`, `.bz2`, `.xz`) | jede Zeile; Zeitstempel am Zeilenanfang, sonst in der ganzen Zeile (z. B. JSON-Logs) – zeilengenau zugeschnitten |
+| Oracle-Reports (AWR, ASH, ADDM …) | Zeitraum aus dem Report-Inhalt (Begin/End Snap) |
+| Text, CSV, JSON, XML, HTML | vollständig, Zeitangaben überall in der Zeile |
+| Office (`.docx`, `.xlsx`, `.pptx`, `.odt`, `.ods` …) | alle Dokument-, Tabellen- und Metadaten-Teile |
+| PDF | Seiteninhalte (entpackt) und Dokument-Datum |
+| sonstige Binärdateien | lesbare Textstellen (wie `strings`), bis `BORA_BINARY_SCAN_MB` (256) |
+
+Jede Datei im Paket trägt ihr Prüfergebnis in der `manifest.json`
+(`inhaltspruefung`, bei sonstigen Dateien zusätzlich `inhalt_gelesen_als`).
+Hinweis: In Excel als Zahl gespeicherte Datumszellen sind ohne Formatauswertung
+nicht als Datum erkennbar; Text-Zeitangaben und Metadaten werden erkannt.
+
 Ohne erkennbare Zeitangabe wird nichts geraten.
 Sonstige Dateien allein erzeugen kein Paket. Ausgenommen: EAR/WAR/JAR/RAR und
 auf `ignore` gesetzte Dateien.

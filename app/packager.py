@@ -235,7 +235,7 @@ def _slice_log(rec: FileRecord, windows: list[Window], by_day: Optional[dict[str
     candidates = [i for i, w in enumerate(windows) if w.overlaps(rec.first, rec.last)]
     if not candidates:
         return slices
-    parser = LineTimestampParser()
+    parser = LineTimestampParser(whole_line=rec.info.get("ts_mode") == "ganze Zeile")
     pending: list[bytes] = []
     current: Optional[datetime] = None
     targets: list[int] = []
@@ -366,7 +366,9 @@ def _write_zip(w: Window, slices: list[tuple[FileRecord, _Slice]], out_dir: Path
                 "eintrag": arc, "kategorie": detect.AWR, "quelle": f"{a.root}/{a.rel}",
                 "von": a.first.isoformat() if a.first else None,
                 "bis": a.last.isoformat() if a.last else None,
-                **{k: v for k, v in a.info.items() if v and k != "sha256"}, **dup_info(a),
+                **{k: v for k, v in a.info.items() if v and k != "sha256"},
+                "inhaltspruefung": "Zeitraum aus dem Report-Inhalt (Begin/End Snap bzw. Analysezeitraum)",
+                **dup_info(a),
             })
         for rec, sl in sorted(slices, key=lambda t: (t[0].category, t[0].root, t[0].rel)):
             arc = unique(entry_name(rec))
@@ -374,7 +376,10 @@ def _write_zip(w: Window, slices: list[tuple[FileRecord, _Slice]], out_dir: Path
             manifest["dateien"].append({
                 "eintrag": arc, "kategorie": rec.category, "quelle": f"{rec.root}/{rec.rel}",
                 "zeilen": sl.lines, "von": sl.first.isoformat() if sl.first else None,
-                "bis": sl.last.isoformat() if sl.last else None, **dup_info(rec),
+                "bis": sl.last.isoformat() if sl.last else None,
+                "inhaltspruefung": f"zeilengenau: {sl.lines} von {rec.info.get('lines', '?')} Zeilen im Zeitraum "
+                                   f"(Zeitstempel: {rec.info.get('ts_mode', 'Zeilenanfang')})",
+                **dup_info(rec),
             })
         for o in sorted(w.other, key=lambda r: (r.root, r.rel)):
             if other_max_bytes and o.size > other_max_bytes:
@@ -385,6 +390,7 @@ def _write_zip(w: Window, slices: list[tuple[FileRecord, _Slice]], out_dir: Path
             manifest["dateien"].append({
                 "eintrag": arc, "kategorie": "sonstige", "quelle": f"{o.root}/{o.rel}",
                 "datum_aus": o.info.get("date_source"), "inhaltspruefung": o.info.get("pruefung"),
+                "inhalt_gelesen_als": o.info.get("gelesen_als"),
                 "tage": o.days, **dup_info(o),
             })
         minfo = zipfile.ZipInfo("manifest.json", date_time=_zip_time(w.timestamp))
